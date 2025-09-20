@@ -11,7 +11,7 @@ A powerful Terminal User Interface (TUI) for monitoring and managing ROS2 topics
 ## Prerequisites
 
 - ROS2 installed and sourced
-- `ros2 topic` and `ros2 param` commands available in PATH
+- `ros2 topic` and `ros2 param` commands available in your shell
 
 ## Installation
 
