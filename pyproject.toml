@@ -1,0 +1,50 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "ros2-tui"
+description = "A Terminal User Interface (TUI) for monitoring and managing ROS2 topics and parameters"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Till Beemelmanns", email = "till.beemelmanns@example.com" },
+]
+keywords = ["ros2", "tui", "terminal", "monitoring", "robotics"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Interface Engine/Protocol Translator",
+    "Topic :: System :: Monitoring",
+]
+requires-python = ">=3.8"
+dynamic = ["version"]
+
+[project.urls]
+homepage = "https://github.com/beemelmanns/ros2_tui"
+repository = "https://github.com/beemelmanns/ros2_tui"
+documentation = "https://github.com/beemelmanns/ros2_tui#readme"
+changelog = "https://github.com/beemelmanns/ros2_tui/blob/main/CHANGELOG.md"
+
+[project.scripts]
+ros2-topics = "ros2_tui:topics_main"
+ros2-params = "ros2_tui:params_main"
+
+[tool.maturin]
+python-source = "python"
+module-name = "ros2_tui._ros2_tui"
+bindings = "bin"
+
+[tool.maturin.scripts]
+ros2-topics = "ros2_tui.bin.ros2_topics:main"
+ros2-params = "ros2_tui.bin.ros2_params:main"

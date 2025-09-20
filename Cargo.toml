@@ -1,13 +1,29 @@
 [package]
-name = "toptop"
+name = "ros2_tui"
 version = "0.1.0"
-authors = ["Till Beemelmanns"]
-description = "A TUI for monitoring ROS2 topics."
-repository = "https://github.com/beemelmanns/toptop"
+authors = ["Till Beemelmanns <till.beemelmanns@gmail.com>"]
+description = "A Terminal User Interface (TUI) for monitoring and managing ROS2 topics and parameters"
+repository = "https://github.com/Tillbeemelmanns/ros2_tui"
 license = "MIT"
 edition = "2021"
 readme = "README.md"
-keywords = ["ros2", "topics", "monitoring", "tui", "terminal"]
+homepage = "https://github.com/Tillbeemelmanns/ros2_tui"
+documentation = "https://docs.rs/ros2_tui"
+keywords = ["ros2", "tui", "terminal", "monitoring", "robotics"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = [
+    "/.github/*",
+    "/target/*",
+    "*.log"
+]
+
+[[bin]]
+name = "topics"
+path = "src/bin/topics.rs"
+
+[[bin]]
+name = "params"
+path = "src/bin/params.rs"
 
 [dependencies]
 clap = { version = "4.5.40", features = ["derive"] }
@@ -21,5 +37,6 @@ ratatui = "0.29.0"
 regex = "1.11.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 tokio = { version = "1.40", features = ["rt", "rt-multi-thread", "process", "time", "macros", "io-util"] }
 
