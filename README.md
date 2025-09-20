@@ -15,16 +15,16 @@ A powerful Terminal User Interface (TUI) for monitoring and managing ROS2 topics
 
 ## Installation
 
-### From crates.io
-
-```bash
-cargo install ros2_tui
-```
-
 ### From pypi
 
 ```bash
 pip install ros2-tui
+```
+
+### From crates.io
+
+```bash
+cargo install ros2_tui
 ```
 
 ### From Source
