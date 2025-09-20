@@ -4,6 +4,7 @@
 [![PyPI](https://img.shields.io/pypi/v/ros2-tui.svg)](https://pypi.org/project/ros2-tui/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Test](https://github.com/TillBeemelmanns/ros2_tui/actions/workflows/test.yml/badge.svg)](https://github.com/TillBeemelmanns/ros2_tui/actions/workflows/test.yml)
+[![Release](https://github.com/TillBeemelmanns/ros2_tui/actions/workflows/release.yml/badge.svg)](https://github.com/TillBeemelmanns/ros2_tui/actions/workflows/release.yml)
 
 A powerful Terminal User Interface (TUI) for monitoring and managing ROS2 topics and parameters in real-time.
 
@@ -29,13 +30,13 @@ A powerful Terminal User Interface (TUI) for monitoring and managing ROS2 topics
 
 ## Installation
 
-### From crates.io (coming soon)
+### From crates.io
 
 ```bash
 cargo install ros2_tui
 ```
 
-### From pypi (coming soon)
+### From pypi
 
 ```bash
 pip install ros2-tui
