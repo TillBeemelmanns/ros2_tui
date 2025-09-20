@@ -8,7 +8,7 @@ description = "A Terminal User Interface (TUI) for monitoring and managing ROS2 
 readme = "README.md"
 license = { text = "MIT" }
 authors = [
-    { name = "Till Beemelmanns", email = "till.beemelmanns@example.com" },
+    { name = "Till Beemelmanns", email = "till.beemelmanns@gmail.com" },
 ]
 keywords = ["ros2", "tui", "terminal", "monitoring", "robotics"]
 classifiers = [
@@ -31,10 +31,10 @@ requires-python = ">=3.8"
 dynamic = ["version"]
 
 [project.urls]
-homepage = "https://github.com/beemelmanns/ros2_tui"
-repository = "https://github.com/beemelmanns/ros2_tui"
-documentation = "https://github.com/beemelmanns/ros2_tui#readme"
-changelog = "https://github.com/beemelmanns/ros2_tui/blob/main/CHANGELOG.md"
+homepage = "https://github.com/TillBeemelmanns/ros2_tui"
+repository = "https://github.com/TillBeemelmanns/ros2_tui"
+documentation = "https://github.com/TillBeemelmanns/ros2_tui#readme"
+changelog = "https://github.com/TillBeemelmanns/ros2_tui/releases"
 
 [tool.maturin]
 bindings = "bin"

@@ -30,7 +30,7 @@ cargo install ros2_tui
 ### From Source
 
 ```bash
-git clone https://github.com/beemelmanns/topics.git
+git clone https://github.com/TillBeemelmanns/topics.git
 cd topics/topics
 cargo build --release
 ```
