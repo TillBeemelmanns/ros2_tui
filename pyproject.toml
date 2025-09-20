@@ -36,15 +36,9 @@ repository = "https://github.com/beemelmanns/ros2_tui"
 documentation = "https://github.com/beemelmanns/ros2_tui#readme"
 changelog = "https://github.com/beemelmanns/ros2_tui/blob/main/CHANGELOG.md"
 
-[project.scripts]
-ros2-topics = "ros2_tui:topics_main"
-ros2-params = "ros2_tui:params_main"
-
 [tool.maturin]
-python-source = "python"
-module-name = "ros2_tui._ros2_tui"
 bindings = "bin"
 
 [tool.maturin.scripts]
-ros2-topics = "ros2_tui.bin.ros2_topics:main"
-ros2-params = "ros2_tui.bin.ros2_params:main"
+ros2-topics = "topics"
+ros2-params = "params"

@@ -8,25 +8,10 @@
 
 A powerful Terminal User Interface (TUI) for monitoring and managing ROS2 topics and parameters in real-time.
 
-## Features
-
-- 📊 **Real-time topic monitoring** - Continuous streaming of topic metrics with immediate updates
-- 🎯 **Selective monitoring** - Choose which topics to watch for Hz/Delay measurements
-- 🌳 **Hierarchical grouping** - Topics organized by namespace with collapsible groups
-- 🔍 **Search functionality** - Filter topics with F4 search mode
-- ⚡ **Fast loading animation** - Ultra-fast blinking dots provide instant visual feedback
-- 📋 **Complete topic info** - Publisher/subscriber counts, message types, sorted alphabetically
-- 📜 **Automatic scrolling** - Handles unlimited topics with smooth navigation
-- ⌨️ **Keyboard navigation** - Vim-like controls and hjkl navigation
-- 🎨 **Visual indicators** - Color-coded watched topics, loading states, and error conditions
-- 🚫 **Smart error handling** - Shows "No Stamp" for topics without header information
-- ⚡ **Lightweight** - No ROS2 Python dependencies, wraps CLI commands efficiently
-- 🚀 **High performance** - Multi-threaded continuous streaming architecture
-
 ## Prerequisites
 
 - ROS2 installed and sourced
-- `ros2 topic` command available in PATH
+- `ros2 topic` and `ros2 param` commands available in PATH
 
 ## Installation
 
@@ -50,13 +35,17 @@ cd topics/topics
 cargo build --release
 ```
 
-The binary will be available at `target/release/topics`.
+The binaries `topics` and `params` will be available at `target/release/`.
 
+## Topics TUI (`topics`)
 
-## Usage
+### Highlights
+- 📊 Real-time Hz/Delay monitoring backed by streaming `ros2 topic hz` / `delay`
+- 🌳 Namespace-aware topic tree with collapsible groups and instant search
+- 🎯 Watch-only metrics so large graphs stay responsive and low overhead
+- 🎨 Status indicators, Bollinger-band charts, and debug logging for on-call triage
 
-### Basic Usage
-
+### Usage
 ```bash
 # Start monitoring with default settings
 topics
@@ -65,78 +54,68 @@ topics
 topics --refresh 10
 ```
 
-### Topic Watching and Navigation
+Toggling a row with `Enter` starts Hz/Delay measurement. Unwatched topics stay lightweight, ensuring responsive navigation even with hundreds of topics.
 
-The interface organizes topics hierarchically by namespace and **only displays Hz/Delay metrics for topics you choose to "watch"**. This prevents performance issues and provides instant feedback:
+### Navigation & Controls
+- `↑`/`↓` or `j`/`k` move between topics; `←`/`→` or `h`/`l` collapse and expand namespaces
+- `Enter` toggles watching on the focused topic or expands/collapses a group
+- `Tab` toggles the current group; `c` collapses/expands all groups at once
+- `F4` opens live search with auto-expansion; `Space`, `r`, or `F5` refresh immediately
+- `q`, `Esc`, or `Ctrl+C` quit; `--verbose` writes detailed logs to `topics_debug.log`
 
-**Navigation:**
-1. **Browse groups**: Topics are organized by their first namespace segment (e.g., `/camera/image` appears under "camera" group)
-2. **Expand/collapse groups**: Use `→`/`←` arrows, `Tab`, or `Enter` on group names
-3. **Navigate topics**: Use `↑`/`↓` or `j`/`k` to move between topics and groups
-4. **Search**: Press `F4` to filter topics and auto-expand matching groups
-5. **Toggle all groups**: Press `c` to collapse or expand all groups at once
+### Command-Line Options
+- `--refresh <SECONDS>` – Topic list refresh cadence (default: 5)
+- `--detail-refresh <SECONDS>` – Legacy detail polling interval (still accepted)
+- `--no-initial-fetch` – Skip the initial `ros2 topic list` call
+- `--help`, `--version` – Standard metadata flags
 
-**Topic Watching:**
-1. **Select any topic** and press `Enter` to toggle watching
-2. **Loading animation**: Ultra-fast blinking dots show measurement startup
-3. **Watched topics** show a `●` indicator and display live Hz/Delay metrics
-4. **Topics without headers** show "No Stamp" instead of delay values
-5. **Unwatched topics** show basic info only (name, type, pub/sub counts)
+### Architecture Highlights
+- Background workers keep `ros2 topic list -v`, `ros2 topic hz`, and `ros2 topic delay` streaming without blocking the UI
+- Crossbeam channels drive a non-blocking event loop that renders at ~5 FPS and processes input instantly
+- Watched topics maintain FIFO histories (including std dev) to power Bollinger-band charts and statistical readouts
+- Selective monitoring conserves system resources by spawning measurement processes only when needed
 
-This selective monitoring approach allows you to:
-- ✅ Monitor hundreds of topics without performance impact
-- ✅ Focus on specific topics of interest  
-- ✅ Reduce system resource usage
-- ✅ Get responsive UI even with many active topics
+## Params TUI (`params`)
 
-### Command Line Options
+### Highlights
+- 🧭 Node/namespace browser that mirrors `ros2 param list` hierarchies
+- 🔄 Live value polling keeps displayed values fresh without manual refreshes
+- ✏️ In-terminal editing with type validation plus YAML dump/load workflows
+- 🧰 Built-in search, success/error banners, and contextual help overlays
 
-- `--refresh <SECONDS>` - Topic list refresh rate (default: 5)
-- `--detail-refresh <SECONDS>` - Detail refresh interval (legacy, unused)
-- `--no-initial-fetch` - Skip initial topic fetch (for debugging)
-- `--help` - Show help information
-- `--version` - Show version
+### Usage
+```bash
+# Parameter dashboard with 5 second refresh
+params
 
-### Keyboard Controls
+# Faster poll rate for parameters
+params --refresh 2
+```
 
-- `↑`/`k` - Move selection up
-- `↓`/`j` - Move selection down
-- `←`/`h` - Collapse current group
-- `→`/`l` - Expand current group
-- `Enter` - Toggle topic watching (starts Hz/Delay monitoring) / Toggle group expansion
-- `Tab` - Toggle current group expansion
-- `Space` - Refresh topic list
-- `c` - Toggle collapse/uncollapse all groups
-- `F4` - Enter search mode (ESC to cancel, Enter to confirm)
-- `r`/`F5` - Force refresh topic list
-- `q`/`Ctrl+C`/`Esc` - Quit
+The app groups dotted parameter names into expandable namespaces so large graphs stay navigable. Value edits, dumps, and loads run through the ROS2 CLI and report their outcome inline.
 
+### Navigation & Controls
+- `↑`/`↓` or `j`/`k` move through nodes and parameters; `←`/`→` or `h`/`l` collapse/expand namespaces
+- `?` opens the help overlay; `F4` enters search mode with persistent filtering
+- `Space`, `r`, or `F5` refresh on demand; `Esc` exits dialogs, cancels search, or quits
 
-## Architecture
+### Parameter Actions
+- `s` edits the selected parameter (array values are normalised for ROS2 compatibility)
+- `d` dumps the current node to YAML via `ros2 param dump`
+- `Ctrl+l` loads YAML into the active node using `ros2 param load`
+- Inline success/error banners acknowledge operations and fade automatically
 
-topics is built as a lightweight wrapper around ROS2's built-in CLI tools using a **multi-threaded worker architecture** inspired by [turm](https://github.com/kabouzeid/turm):
+### Command-Line Options
+- `--refresh <SECONDS>` – Parameter polling cadence (default: 5)
+- `--no-initial-fetch` – Skip the initial `ros2 param list` scan
+- `--verbose` / `-v` – Emit detailed logs to `params_debug.log`
+- `--help`, `--version` – Standard metadata flags
 
-### ROS2 Command Integration
-- `ros2 topic list -v` - Get topic list with types and publisher/subscriber counts
-- `ros2 topic hz <topic>` - Continuous topic frequency monitoring (streaming)
-- `ros2 topic delay <topic>` - Continuous topic delay monitoring (streaming)
-
-### Performance Architecture
-- **Continuous Streaming**: ROS2 commands run as long-running processes for real-time updates
-- **Message Passing**: Uses `crossbeam` channels for thread-safe communication
-- **Non-blocking UI**: Main thread handles only UI rendering and user input (~5 FPS)
-- **Responsive Controls**: Keyboard input is processed immediately regardless of ROS2 command latency
-- **Smart Resource Management**: Only monitors selected topics to prevent system overload
-
-This approach ensures:
-- ✅ **Real-time updates** - Continuous streaming provides immediate metric updates
-- ✅ **Scalable performance** - Only monitors topics you select for detailed metrics
-- ✅ **Auto-scrolling interface** - Handles unlimited topics smoothly with alphabetical sorting
-- ✅ **Visual feedback** - Fast loading animations and status indicators
-- ✅ **Error resilience** - Graceful handling of topics without header information
-- ✅ **Minimal dependencies** - Only standard ROS2 CLI tools required
-- ✅ **Always compatible** - Works with any ROS2 installation
-- ✅ **Lightweight and fast** - No Python/ROS2 library overhead
+### Architecture Highlights
+- A primary watcher repeatedly shells out to `ros2 param list`, building a `ParamTree` that mirrors node hierarchies
+- A secondary watcher streams value lookups to populate the table without blocking the UI thread
+- Dump/load/edit workflows wrap the ROS2 CLI while scheduling delayed refreshes to reflect state changes
+- All ROS2 interaction happens on background threads, keeping the Crossterm-driven interface responsive under load
 
 ## Development
 
@@ -162,7 +141,7 @@ cargo fmt --all -- --check
 
 Lint code
 ```bash
-cargo clippy --all-targets --all-features -- -D warningss
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
 
@@ -171,6 +150,7 @@ cargo clippy --all-targets --all-features -- -D warningss
 | Tool | Language | Dependencies | Features | Performance |
 |------|----------|-------------|----------|-------------|
 | topics | Rust | ros2 CLI only | TUI, Real-time metrics | ⚡ Fast |
+| params | Rust | ros2 CLI only | TUI, Parameter management | ⚡ Fast |
 | rqt_topic | Python | Full ROS2 + Qt | GUI, Rich features | 🐌 Heavy |
 | ros2 topic | Python | Full ROS2 | CLI only | 🚀 Fast but limited |
 
