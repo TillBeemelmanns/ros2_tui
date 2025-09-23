@@ -14,7 +14,7 @@ use ros2_tui::topics::*;
 
 fn main() -> io::Result<()> {
     let matches = Command::new("topics")
-        .version("0.1.0")
+        .version("0.1.2")
         .author("Till Beemelmanns")
         .about("A TUI for monitoring ROS2 topics")
         .arg(
