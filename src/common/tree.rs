@@ -68,6 +68,14 @@ impl TopicTreeNode {
             self.is_expanded = !self.is_expanded;
         }
     }
+
+    pub fn direct_topic_child(&self) -> Option<&TopicTreeNode> {
+        self.children.get(&self.full_path)
+    }
+
+    pub fn is_single_topic_container(&self) -> bool {
+        !self.is_leaf && self.children.len() == 1 && self.direct_topic_child().is_some()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -156,7 +164,7 @@ impl TopicTree {
                 indent_level: 0,
             });
 
-            if group_node.is_expanded {
+            if !group_node.is_single_topic_container() && group_node.is_expanded {
                 let mut sorted_children: Vec<_> = group_node.children.values().collect();
                 sorted_children.sort_by(|a, b| a.name.cmp(&b.name));
                 for topic_node in sorted_children {
@@ -196,10 +204,10 @@ pub struct TopicTreeItem {
 
 impl TopicTreeItem {
     pub fn is_group(&self) -> bool {
-        !self.node.is_leaf
+        !self.node.is_leaf && !self.node.is_single_topic_container()
     }
     pub fn is_topic(&self) -> bool {
-        self.node.is_leaf
+        self.node.is_leaf || self.node.is_single_topic_container()
     }
 
     pub fn get_display_name(&self) -> String {
@@ -210,22 +218,14 @@ impl TopicTreeItem {
             } else {
                 "▶ "
             }
+        } else if self.node.is_single_topic_container() {
+            "• "
         } else {
             "  "
         };
 
         let display_name = if self.is_topic() {
-            let parts: Vec<&str> = self
-                .node
-                .name
-                .split('/')
-                .filter(|s| !s.is_empty())
-                .collect();
-            if parts.len() > 1 {
-                format!("/{}", parts[1..].join("/"))
-            } else {
-                self.node.name.clone()
-            }
+            self.node.full_path.clone()
         } else {
             self.node.name.clone()
         };
@@ -234,6 +234,16 @@ impl TopicTreeItem {
     }
 
     pub fn get_topic_info(&self) -> Option<&TopicInfo> {
-        self.node.topic_info.as_ref()
+        if let Some(info) = self.node.topic_info.as_ref() {
+            return Some(info);
+        }
+
+        if self.node.is_single_topic_container() {
+            if let Some(child) = self.node.direct_topic_child() {
+                return child.topic_info.as_ref();
+            }
+        }
+
+        None
     }
 }
