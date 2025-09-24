@@ -14,7 +14,7 @@ use ros2_tui::params::*;
 
 fn main() -> io::Result<()> {
     let matches = Command::new("params")
-        .version("0.1.2")
+        .version("0.1.3")
         .author("Till Beemelmanns")
         .about("A TUI for managing ROS2 parameters")
         .arg(
