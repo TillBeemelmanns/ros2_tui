@@ -58,6 +58,7 @@ fn render_help(f: &mut Frame) {
         Line::from("    <Enter>     - Toggle watch on topic / expand group"),
         Line::from("    d           - View details for selected topic"),
         Line::from("    c           - Toggle collapse/uncollapse all groups"),
+        Line::from("    s           - Toggle sim time for delay metrics"),
         Line::from("    F4          - Enter search/filter mode"),
         Line::from(""),
         Line::from(Span::styled(
@@ -94,13 +95,22 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         String::new()
     };
 
-    let status_text = if let Some(error) = &app.error_message {
-        Line::from(Span::styled(
+    let sim_time_span = Span::styled(
+        format!("Sim time: {}", if app.use_sim_time { "ON" } else { "OFF" }),
+        Style::default().fg(if app.use_sim_time {
+            Color::Green
+        } else {
+            Color::DarkGray
+        }),
+    );
+
+    let mut spans = if let Some(error) = &app.error_message {
+        vec![Span::styled(
             format!("Error: {}", error),
             Style::default().fg(Color::Red),
-        ))
+        )]
     } else if app.mode == AppMode::TopicDetail {
-        Line::from(vec![
+        vec![
             Span::raw("↑↓/jk: Scroll | "),
             Span::styled("PgUp/PgDn", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(": Page | "),
@@ -110,11 +120,13 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::raw(": Switch Pane | "),
             Span::styled("e", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(": Toggle Echo | "),
+            Span::styled("s", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(": Sim Time | "),
             Span::styled("q/Esc", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(": Back"),
-        ])
+        ]
     } else {
-        Line::from(vec![
+        let mut base = vec![
             Span::raw("↑↓/jk Navigate | "),
             Span::styled("Enter", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(": Watch/Expand | "),
@@ -124,17 +136,34 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::raw(": Un/Collapse | "),
             Span::styled("F4", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(": Search | "),
+            Span::styled("s", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(": Sim Time | "),
             Span::styled("r", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(": Refresh | "),
             Span::styled("?", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(": Help | "),
             Span::styled("q", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(": Quit"),
-            Span::styled(filter_display, Style::default().fg(Color::Yellow)),
-        ])
+        ];
+        if !filter_display.is_empty() {
+            base.push(Span::styled(
+                filter_display,
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        base
     };
 
-    let status = Paragraph::new(status_text).block(Block::default().borders(Borders::TOP));
+    let content_width: usize = spans.iter().map(|span| span.content.len()).sum();
+    let indicator_width = sim_time_span.content.len();
+    let available_width = area.width.saturating_sub(1) as usize; // Leave room for border rendering quirks
+    let padding = available_width
+        .saturating_sub(content_width + indicator_width)
+        .max(1);
+    spans.push(Span::raw(" ".repeat(padding)));
+    spans.push(sim_time_span);
+
+    let status = Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::TOP));
     f.render_widget(status, area);
 }
 

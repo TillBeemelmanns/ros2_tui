@@ -60,6 +60,7 @@ Toggling a row with `Enter` starts Hz/Delay measurement. Unwatched topics stay l
 - `↑`/`↓` or `j`/`k` move between topics; `←`/`→` or `h`/`l` collapse and expand namespaces
 - `Enter` toggles watching on the focused topic or expands/collapses a group
 - `Tab` toggles the current group; `c` collapses/expands all groups at once
+- `s` toggles simulation time when measuring delay metrics
 - `F4` opens live search with auto-expansion; `Space`, `r`, or `F5` refresh immediately
 - `q`, `Esc`, or `Ctrl+C` quit; `--verbose` writes detailed logs to `topics_debug.log`
 

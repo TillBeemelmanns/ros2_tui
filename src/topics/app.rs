@@ -49,6 +49,7 @@ pub struct App {
     pub last_animation_update: std::time::Instant,
 
     pub expansion_state: HashMap<String, bool>,
+    pub use_sim_time: bool,
 
     message_receiver: Receiver<TopicMessage>,
     watch_sender: Sender<WatchMessage>,
@@ -82,6 +83,7 @@ impl App {
             error_message: None,
             last_animation_update: std::time::Instant::now(),
             expansion_state: HashMap::new(),
+            use_sim_time: false,
             message_receiver: topic_receiver,
             watch_sender,
             _topic_watcher: topic_watcher,
@@ -302,6 +304,7 @@ impl App {
                     }
                 }
                 'd' => self.enter_detail_view(),
+                's' => self.toggle_sim_time(),
                 '?' => self.mode = AppMode::Help,
                 _ => {}
             }
@@ -571,6 +574,27 @@ impl App {
                 }
             }
         }
+    }
+
+    fn toggle_sim_time(&mut self) {
+        match self.mode {
+            AppMode::TopicList | AppMode::TopicDetail => {}
+            _ => return,
+        }
+
+        self.use_sim_time = !self.use_sim_time;
+
+        for topic in self.topic_map.values_mut().filter(|t| t.watched) {
+            topic.delay_status = MeasurementStatus::Loading(0);
+            topic.delay = None;
+            topic.delay_std_dev = None;
+            topic.delay_history.clear();
+            topic.delay_std_dev_history.clear();
+        }
+
+        let _ = self
+            .watch_sender
+            .send(WatchMessage::SetUseSimTime(self.use_sim_time));
     }
 
     pub fn toggle_collapse_all(&mut self) {

@@ -130,15 +130,21 @@ pub async fn parse_hz_stream_line(line: &str) -> (Option<f64>, Option<f64>, Meas
 
 pub async fn start_topic_delay_stream(
     topic_name: &str,
+    use_sim_time: bool,
 ) -> Result<tokio::process::Child, TopicError> {
     crate::debug_log(&format!(
-        "Starting continuous delay stream for topic: '{}'",
-        topic_name
+        "Starting continuous delay stream for topic: '{}' (sim_time={})",
+        topic_name, use_sim_time
     ));
 
-    let child = Command::new("ros2")
-        .arg("topic")
-        .arg("delay")
+    let mut command = Command::new("ros2");
+    command.arg("topic").arg("delay");
+
+    if use_sim_time {
+        command.arg("--use-sim-time");
+    }
+
+    let child = command
         .arg(topic_name)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

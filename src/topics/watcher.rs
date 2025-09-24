@@ -44,6 +44,7 @@ pub enum WatchMessage {
     StopContinuousMetrics(String),
     StartEcho(String),
     StopEcho,
+    SetUseSimTime(bool),
 }
 
 pub struct TopicWatcherHandle {
@@ -139,10 +140,16 @@ impl TopicDetailWatcherHandle {
 }
 use std::collections::HashMap;
 use tokio::task::JoinHandle;
+struct MonitoringHandles {
+    hz: JoinHandle<()>,
+    delay: JoinHandle<()>,
+}
+
 struct TopicDetailWatcher {
     sender: Sender<TopicMessage>,
-    active_tasks: HashMap<String, (JoinHandle<()>, JoinHandle<()>)>,
+    active_tasks: HashMap<String, MonitoringHandles>,
     echo_task: Option<JoinHandle<()>>,
+    use_sim_time: bool,
 }
 impl TopicDetailWatcher {
     fn new(sender: Sender<TopicMessage>) -> Self {
@@ -150,6 +157,7 @@ impl TopicDetailWatcher {
             sender,
             active_tasks: HashMap::new(),
             echo_task: None,
+            use_sim_time: false,
         }
     }
     fn run(
@@ -160,9 +168,9 @@ impl TopicDetailWatcher {
         crate::debug_log("Detail watcher thread started");
         loop {
             if cleanup_receiver.try_recv().is_ok() {
-                self.active_tasks.drain().for_each(|(_, (hz, delay))| {
-                    hz.abort();
-                    delay.abort();
+                self.active_tasks.drain().for_each(|(_, handles)| {
+                    handles.hz.abort();
+                    handles.delay.abort();
                 });
                 if let Some(task) = self.echo_task.take() {
                     task.abort();
@@ -177,11 +185,9 @@ impl TopicDetailWatcher {
                         }
                     }
                     WatchMessage::StopContinuousMetrics(topic_name) => {
-                        if let Some((hz_handle, delay_handle)) =
-                            self.active_tasks.remove(&topic_name)
-                        {
-                            hz_handle.abort();
-                            delay_handle.abort();
+                        if let Some(handles) = self.active_tasks.remove(&topic_name) {
+                            handles.hz.abort();
+                            handles.delay.abort();
                         }
                     }
                     WatchMessage::StartEcho(topic_name) => {
@@ -198,6 +204,24 @@ impl TopicDetailWatcher {
                             task.abort();
                         }
                     }
+                    WatchMessage::SetUseSimTime(enabled) => {
+                        if self.use_sim_time != enabled {
+                            self.use_sim_time = enabled;
+                            let topics: Vec<String> = self.active_tasks.keys().cloned().collect();
+                            for topic in topics {
+                                if let Some(handles) = self.active_tasks.get_mut(&topic) {
+                                    handles.delay.abort();
+                                    let sender_delay = self.sender.clone();
+                                    handles.delay =
+                                        SHARED_RUNTIME.spawn(Self::monitor_topic_delay(
+                                            topic.clone(),
+                                            sender_delay,
+                                            self.use_sim_time,
+                                        ));
+                                }
+                            }
+                        }
+                    }
                 }
             }
             thread::sleep(Duration::from_millis(100));
@@ -208,10 +232,18 @@ impl TopicDetailWatcher {
         let sender_hz = self.sender.clone();
         let hz_handle = SHARED_RUNTIME.spawn(Self::monitor_topic_hz(topic_name.clone(), sender_hz));
         let sender_delay = self.sender.clone();
-        let delay_handle =
-            SHARED_RUNTIME.spawn(Self::monitor_topic_delay(topic_name.clone(), sender_delay));
-        self.active_tasks
-            .insert(topic_name, (hz_handle, delay_handle));
+        let delay_handle = SHARED_RUNTIME.spawn(Self::monitor_topic_delay(
+            topic_name.clone(),
+            sender_delay,
+            self.use_sim_time,
+        ));
+        self.active_tasks.insert(
+            topic_name,
+            MonitoringHandles {
+                hz: hz_handle,
+                delay: delay_handle,
+            },
+        );
     }
     async fn monitor_topic_echo(topic_name: String, sender: Sender<TopicMessage>) {
         use tokio::io::{AsyncBufReadExt, BufReader};
@@ -271,10 +303,14 @@ impl TopicDetailWatcher {
             tokio::time::sleep(Duration::from_millis(2000)).await;
         }
     }
-    async fn monitor_topic_delay(topic_name: String, sender: Sender<TopicMessage>) {
+    async fn monitor_topic_delay(
+        topic_name: String,
+        sender: Sender<TopicMessage>,
+        use_sim_time: bool,
+    ) {
         use tokio::io::{AsyncBufReadExt, BufReader};
         loop {
-            if let Ok(mut child) = ros::start_topic_delay_stream(&topic_name).await {
+            if let Ok(mut child) = ros::start_topic_delay_stream(&topic_name, use_sim_time).await {
                 if let Some(stdout) = child.stdout.take() {
                     let mut reader = BufReader::new(stdout).lines();
 
