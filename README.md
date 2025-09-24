@@ -144,6 +144,16 @@ Lint code
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
+### Release Safety Check
+
+Configure Git once so the bundled pre-push hook runs before release pushes:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+When you push a tag such as `v0.3.0`, the hook calls `scripts/check-release-version.sh` and verifies the tag matches the `Cargo.toml` version. The push is rejected if they diverge, keeping release tags in sync with the crate metadata.
+
 
 ## Comparison with Other Tools
 
