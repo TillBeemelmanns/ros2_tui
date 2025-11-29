@@ -1,6 +1,6 @@
 [package]
 name = "ros2_tui"
-version = "0.1.3"
+version = "0.1.4"
 authors = ["Till Beemelmanns <till.beemelmanns@gmail.com>"]
 description = "A Terminal User Interface (TUI) for monitoring and managing ROS2 topics and parameters"
 repository = "https://github.com/Tillbeemelmanns/ros2_tui"
