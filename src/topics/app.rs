@@ -516,6 +516,7 @@ impl App {
     }
 
     pub fn shutdown(&self) {
+        self.topic_watcher.shutdown();
         self.detail_watcher.shutdown();
     }
 
@@ -529,11 +530,23 @@ impl App {
         } else if self.selected_index >= self.visible_items.len() {
             self.selected_index = self.visible_items.len() - 1;
         }
+        self.adjust_scroll();
+    }
+
+    fn adjust_scroll(&mut self) {
+        const VISIBLE_HEIGHT: usize = 20; // Approximate visible height
+
+        if self.selected_index < self.scroll_offset {
+            self.scroll_offset = self.selected_index;
+        } else if self.selected_index >= self.scroll_offset + VISIBLE_HEIGHT {
+            self.scroll_offset = self.selected_index - VISIBLE_HEIGHT + 1;
+        }
     }
 
     pub fn select_next(&mut self) {
         if !self.visible_items.is_empty() {
             self.selected_index = (self.selected_index + 1) % self.visible_items.len();
+            self.adjust_scroll();
         }
     }
 
@@ -541,6 +554,7 @@ impl App {
         if !self.visible_items.is_empty() {
             self.selected_index =
                 (self.selected_index + self.visible_items.len() - 1) % self.visible_items.len();
+            self.adjust_scroll();
         }
     }
 
