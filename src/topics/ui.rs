@@ -761,7 +761,9 @@ fn render_search_mode(f: &mut Frame, app: &App) {
     }
 
     let filtered_visible_items = filtered_tree.get_flattened_view();
-    let selected_index = app.selected_index.min(filtered_visible_items.len().saturating_sub(1));
+    let selected_index = app
+        .selected_index
+        .min(filtered_visible_items.len().saturating_sub(1));
 
     // Render the filtered search results table
     render_search_table(f, app, &filtered_visible_items, selected_index, chunks[0]);
@@ -795,7 +797,9 @@ fn render_search_table(
     let table_height = area.height.saturating_sub(2) as usize;
     let mut scroll_offset: usize = 0;
     if selected_index >= scroll_offset.saturating_add(table_height) {
-        scroll_offset = selected_index.saturating_sub(table_height).saturating_add(1);
+        scroll_offset = selected_index
+            .saturating_sub(table_height)
+            .saturating_add(1);
     }
     if selected_index < scroll_offset {
         scroll_offset = selected_index;
