@@ -49,16 +49,25 @@ pub enum WatchMessage {
 
 pub struct TopicWatcherHandle {
     _handle: thread::JoinHandle<()>,
+    shutdown_sender: Sender<()>,
 }
 
 impl TopicWatcherHandle {
     pub fn new(sender: Sender<TopicMessage>, refresh_interval: Duration) -> Self {
+        let (shutdown_sender, shutdown_receiver) = crossbeam::channel::bounded::<()>(1);
         let handle = thread::spawn(move || {
             let mut topic_watcher = TopicWatcher::new(sender, refresh_interval);
-            topic_watcher.run();
+            topic_watcher.run(shutdown_receiver);
         });
 
-        Self { _handle: handle }
+        Self {
+            _handle: handle,
+            shutdown_sender,
+        }
+    }
+
+    pub fn shutdown(&self) {
+        let _ = self.shutdown_sender.try_send(());
     }
 }
 
@@ -75,17 +84,26 @@ impl TopicWatcher {
         }
     }
 
-    fn run(&mut self) {
+    fn run(&mut self, shutdown_receiver: crossbeam::channel::Receiver<()>) {
         crate::debug_log("Topic watcher thread started");
 
         // Initial fetch
         self.fetch_and_send_topics();
 
-        // Loop fetch
+        // Loop fetch with shutdown check
         loop {
-            thread::sleep(self.refresh_interval);
-            self.fetch_and_send_topics();
+            // Use select to wait for either timeout or shutdown signal
+            crossbeam::select! {
+                recv(shutdown_receiver) -> _ => {
+                    crate::debug_log("Topic watcher received shutdown signal");
+                    break;
+                }
+                default(self.refresh_interval) => {
+                    self.fetch_and_send_topics();
+                }
+            }
         }
+        crate::debug_log("Topic watcher thread exiting");
     }
 
     // FIX: Handle both Ok and Err cases to make the Error variant live.

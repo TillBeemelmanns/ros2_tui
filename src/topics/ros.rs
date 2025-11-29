@@ -1,7 +1,16 @@
+use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::fmt;
 use tokio::process::Command;
+
+// Pre-compiled regexes for better performance
+static COUNT_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(\d+)\s+(?:publisher|subscriber)s?").unwrap());
+static HZ_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"average rate: ([\d.]+)").unwrap());
+static DELAY_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"average delay: ([\d.]+)").unwrap());
+static STD_DEV_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"std dev: ([\d.]+)s").unwrap());
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TopicInfo {
@@ -16,10 +25,10 @@ pub struct TopicInfo {
     pub watched: bool,
     pub hz_status: MeasurementStatus,
     pub delay_status: MeasurementStatus,
-    pub hz_history: Vec<f64>,
-    pub hz_std_dev_history: Vec<f64>,
-    pub delay_history: Vec<f64>,
-    pub delay_std_dev_history: Vec<f64>,
+    pub hz_history: VecDeque<f64>,
+    pub hz_std_dev_history: VecDeque<f64>,
+    pub delay_history: VecDeque<f64>,
+    pub delay_std_dev_history: VecDeque<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -44,10 +53,10 @@ impl Default for TopicInfo {
             watched: false,
             hz_status: MeasurementStatus::NotMeasuring,
             delay_status: MeasurementStatus::NotMeasuring,
-            hz_history: Vec::new(),
-            hz_std_dev_history: Vec::new(),
-            delay_history: Vec::new(),
-            delay_std_dev_history: Vec::new(),
+            hz_history: VecDeque::new(),
+            hz_std_dev_history: VecDeque::new(),
+            delay_history: VecDeque::new(),
+            delay_std_dev_history: VecDeque::new(),
         }
     }
 }
@@ -179,7 +188,6 @@ pub fn parse_topic_list_verbose(output: &str) -> Vec<TopicInfo> {
 
     let mut topics: HashMap<String, TopicInfo> = HashMap::new();
     let mut current_section = "";
-    let count_regex = Regex::new(r"(\d+)\s+(?:publisher|subscriber)s?").unwrap();
 
     for line in output.lines() {
         let line = line.trim();
@@ -214,8 +222,8 @@ pub fn parse_topic_list_verbose(output: &str) -> Vec<TopicInfo> {
                 // Extract count after the bracket
                 let after_bracket = &line_without_bullet[bracket_end + 1..].trim();
 
-                // Parse count using regex
-                let count = if let Some(caps) = count_regex.captures(after_bracket) {
+                // Parse count using pre-compiled regex
+                let count = if let Some(caps) = COUNT_REGEX.captures(after_bracket) {
                     if let Some(count_match) = caps.get(1) {
                         count_match.as_str().parse().unwrap_or(0)
                     } else {
@@ -260,14 +268,11 @@ pub fn parse_topic_hz(output: &str) -> (Option<f64>, Option<f64>, MeasurementSta
         return (None, None, MeasurementStatus::NotMeasuring);
     }
 
-    let hz_re = Regex::new(r"average rate: ([\d.]+)").unwrap();
-    let std_dev_re = Regex::new(r"std dev: ([\d.]+)s").unwrap();
-
     let mut hz_val = None;
     let mut std_dev_val = None;
 
-    // Parse Hz value
-    if let Some(caps) = hz_re.captures(output) {
+    // Parse Hz value using pre-compiled regex
+    if let Some(caps) = HZ_REGEX.captures(output) {
         if let Some(rate) = caps.get(1) {
             if let Ok(hz) = rate.as_str().parse() {
                 hz_val = Some(hz);
@@ -276,7 +281,7 @@ pub fn parse_topic_hz(output: &str) -> (Option<f64>, Option<f64>, MeasurementSta
     }
 
     // Parse std dev value - this might be on the same line or a different line
-    if let Some(caps) = std_dev_re.captures(output) {
+    if let Some(caps) = STD_DEV_REGEX.captures(output) {
         if let Some(std_dev) = caps.get(1) {
             if let Ok(std_dev) = std_dev.as_str().parse() {
                 std_dev_val = Some(std_dev);
@@ -314,14 +319,11 @@ pub fn parse_topic_delay(output: &str) -> (Option<f64>, Option<f64>, Measurement
         return (None, None, MeasurementStatus::NoStamp);
     }
 
-    let delay_re = Regex::new(r"average delay: ([\d.]+)").unwrap();
-    let std_dev_re = Regex::new(r"std dev: ([\d.]+)s").unwrap();
-
     let mut delay_val = None;
     let mut std_dev_val = None;
 
-    // Parse delay value
-    if let Some(caps) = delay_re.captures(output) {
+    // Parse delay value using pre-compiled regex
+    if let Some(caps) = DELAY_REGEX.captures(output) {
         if let Some(delay) = caps.get(1) {
             if let Ok(delay) = delay.as_str().parse() {
                 delay_val = Some(delay);
@@ -331,7 +333,7 @@ pub fn parse_topic_delay(output: &str) -> (Option<f64>, Option<f64>, Measurement
     }
 
     // Parse std dev value - this might be on the same line or a different line
-    if let Some(caps) = std_dev_re.captures(output) {
+    if let Some(caps) = STD_DEV_REGEX.captures(output) {
         if let Some(std_dev) = caps.get(1) {
             if let Ok(std_dev) = std_dev.as_str().parse() {
                 std_dev_val = Some(std_dev);

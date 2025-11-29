@@ -14,7 +14,6 @@ use super::app::{App, AppMode, DetailPaneFocus, CHARTS_MAX_DATA_POINTS};
 use super::ros;
 use super::ros::MeasurementStatus;
 use crate::common::{TopicTree, TopicTreeItem};
-use std::time::Duration;
 
 pub fn ui(f: &mut Frame, app: &App) {
     match app.mode {
@@ -646,8 +645,7 @@ fn render_topic_table(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                     Cell::from(""),
                 ])
                 .style(style)
-            } else {
-                let topic_info = app.topic_map.get(&item.node.full_path).unwrap();
+            } else if let Some(topic_info) = app.topic_map.get(&item.node.full_path) {
                 let watch_indicator = if topic_info.watched { "●" } else { " " };
 
                 let (hz_display, delay_display) = if topic_info.watched {
@@ -675,6 +673,18 @@ fn render_topic_table(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                     Cell::from(delay_display),
                 ])
                 .style(style)
+            } else {
+                // Topic not found in map - show placeholder row
+                Row::new(vec![
+                    Cell::from(""),
+                    Cell::from(item.get_display_name()),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                ])
+                .style(Style::default().fg(Color::DarkGray))
             }
         })
         .collect();
@@ -721,13 +731,9 @@ fn render_search_mode(f: &mut Frame, app: &App) {
         .constraints([Constraint::Min(0), Constraint::Length(3)])
         .split(f.area());
 
-    // Create a temporary app state to render the live search results
-    // without modifying the main app's visible_items list.
-    let mut temp_app = App::new(Duration::from_secs(1), Duration::from_secs(1));
-    temp_app.topic_map = app.topic_map.clone();
-
+    // Build filtered tree directly without creating expensive App instance
     let search_text = &app.search_text;
-    let filtered_topics: Vec<ros::TopicInfo> = temp_app
+    let filtered_topics: Vec<ros::TopicInfo> = app
         .topic_map
         .values()
         .filter(|topic| {
@@ -754,13 +760,11 @@ fn render_search_mode(f: &mut Frame, app: &App) {
         group.is_expanded = true;
     }
 
-    temp_app.visible_items = filtered_tree.get_flattened_view();
-    temp_app.selected_index = app.selected_index;
-    if temp_app.selected_index >= temp_app.visible_items.len() {
-        temp_app.selected_index = temp_app.visible_items.len().saturating_sub(1);
-    }
+    let filtered_visible_items = filtered_tree.get_flattened_view();
+    let selected_index = app.selected_index.min(filtered_visible_items.len().saturating_sub(1));
 
-    render_topic_table(f, &temp_app, chunks[0]);
+    // Render the filtered search results table
+    render_search_table(f, app, &filtered_visible_items, selected_index, chunks[0]);
 
     let search_prompt = Paragraph::new(Line::from(vec![
         Span::styled("Search: ", Style::default().fg(Color::Yellow)),
@@ -779,4 +783,123 @@ fn render_search_mode(f: &mut Frame, app: &App) {
     );
 
     f.render_widget(search_prompt, chunks[1]);
+}
+
+fn render_search_table(
+    f: &mut Frame,
+    app: &App,
+    visible_items: &[TopicTreeItem],
+    selected_index: usize,
+    area: ratatui::layout::Rect,
+) {
+    let table_height = area.height.saturating_sub(2) as usize;
+    let mut scroll_offset: usize = 0;
+    if selected_index >= scroll_offset.saturating_add(table_height) {
+        scroll_offset = selected_index.saturating_sub(table_height).saturating_add(1);
+    }
+    if selected_index < scroll_offset {
+        scroll_offset = selected_index;
+    }
+
+    let visible_slice: Vec<&TopicTreeItem> = visible_items
+        .iter()
+        .skip(scroll_offset)
+        .take(table_height)
+        .collect();
+
+    let header_cells = [
+        "W",
+        "Topic / Group",
+        "Type",
+        "Pub",
+        "Sub",
+        "Hz",
+        "Delay (ms)",
+    ];
+    let header = Row::new(header_cells).style(
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let rows: Vec<Row> = visible_slice
+        .iter()
+        .map(|item| {
+            if item.is_group() {
+                let style = Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD);
+                Row::new(vec![
+                    Cell::from(""),
+                    Cell::from(item.get_display_name()),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                ])
+                .style(style)
+            } else if let Some(topic_info) = app.topic_map.get(&item.node.full_path) {
+                let watch_indicator = if topic_info.watched { "●" } else { " " };
+
+                let (hz_display, delay_display) = if topic_info.watched {
+                    (
+                        format_measurement(&topic_info.hz, &topic_info.hz_status, 1.0),
+                        format_measurement(&topic_info.delay, &topic_info.delay_status, 1000.0),
+                    )
+                } else {
+                    ("".to_string(), "".to_string())
+                };
+
+                let style = if topic_info.watched {
+                    Style::default().fg(Color::Green)
+                } else {
+                    Style::default()
+                };
+
+                Row::new(vec![
+                    Cell::from(watch_indicator),
+                    Cell::from(item.get_display_name()),
+                    Cell::from(topic_info.msg_type.clone()),
+                    Cell::from(topic_info.publisher_count.to_string()),
+                    Cell::from(topic_info.subscriber_count.to_string()),
+                    Cell::from(hz_display),
+                    Cell::from(delay_display),
+                ])
+                .style(style)
+            } else {
+                Row::new(vec![
+                    Cell::from(""),
+                    Cell::from(item.get_display_name()),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(""),
+                ])
+            }
+        })
+        .collect();
+
+    let title = "ROS2 Topics (Search Results)";
+    let table = Table::new(
+        rows,
+        &[
+            Constraint::Length(2),
+            Constraint::Percentage(45),
+            Constraint::Percentage(25),
+            Constraint::Length(5),
+            Constraint::Length(5),
+            Constraint::Length(8),
+            Constraint::Length(12),
+        ],
+    )
+    .header(header)
+    .block(create_block(title))
+    .row_highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
+    .highlight_symbol(">> ");
+
+    let mut state = ratatui::widgets::TableState::default();
+    state.select(Some(selected_index.saturating_sub(scroll_offset)));
+    f.render_stateful_widget(table, area, &mut state);
 }

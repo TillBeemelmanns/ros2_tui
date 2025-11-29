@@ -64,7 +64,6 @@ pub struct ParamsApp {
 
     // Parameter editing state
     pub edit_state: Option<ParameterEditState>,
-    pub edit_input: String,
     pub file_input: String, // For load/dump operations
 
     // Input cursor positions for better UX
@@ -108,7 +107,6 @@ impl ParamsApp {
             success_message_time: None,
             expansion_state: HashMap::new(),
             edit_state: None,
-            edit_input: String::new(),
             file_input: String::new(),
             edit_cursor: 0,
             file_cursor: 0,
@@ -452,7 +450,9 @@ impl ParamsApp {
         match self.mode {
             AppMode::Search => {
                 self.search_text.clear();
+                self.filter_text.clear();
                 self.mode = AppMode::ParamList;
+                self.rebuild_visible_items();
             }
             AppMode::SetParameter => {
                 self.mode = AppMode::ParamList;
@@ -471,6 +471,9 @@ impl ParamsApp {
                     self.mode = AppMode::ParamList;
                 }
                 self.warning_message.clear();
+            }
+            AppMode::Help => {
+                self.mode = AppMode::ParamList;
             }
             _ => {
                 self.should_quit = true;
@@ -559,6 +562,7 @@ impl ParamsApp {
             } else {
                 // Show warning for single parameter
                 self.warning_message = "Parameter dumping only works with nodes, not with single parameters. Navigate to a specific node to execute parameter dumping.".to_string();
+                self.previous_mode = Some(AppMode::ParamList);
                 self.mode = AppMode::Warning;
             }
         }
@@ -574,6 +578,7 @@ impl ParamsApp {
             } else {
                 // Show warning for single parameter
                 self.warning_message = "Parameter loading only works with nodes, not with single parameters. Navigate to a specific node to execute parameter loading.".to_string();
+                self.previous_mode = Some(AppMode::ParamList);
                 self.mode = AppMode::Warning;
             }
         }
