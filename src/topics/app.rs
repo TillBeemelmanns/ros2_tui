@@ -53,7 +53,7 @@ pub struct App {
 
     message_receiver: Receiver<TopicMessage>,
     watch_sender: Sender<WatchMessage>,
-    _topic_watcher: TopicWatcherHandle,
+    topic_watcher: TopicWatcherHandle,
     detail_watcher: TopicDetailWatcherHandle,
 }
 
@@ -86,7 +86,7 @@ impl App {
             use_sim_time: false,
             message_receiver: topic_receiver,
             watch_sender,
-            _topic_watcher: topic_watcher,
+            topic_watcher,
             detail_watcher,
         }
     }
@@ -142,15 +142,15 @@ impl App {
                     topic.hz = Some(hz);
                     topic.hz_std_dev = std_dev; // Store current std dev for display
                     topic.hz_status = MeasurementStatus::HasValue;
-                    topic.hz_history.push(hz);
+                    topic.hz_history.push_back(hz);
                     if topic.hz_history.len() > CHARTS_MAX_DATA_POINTS {
-                        topic.hz_history.remove(0);
+                        topic.hz_history.pop_front();
                     }
 
                     // Store std dev for Bollinger bands, use 0.0 if no std dev available
-                    topic.hz_std_dev_history.push(std_dev.unwrap_or(0.0));
+                    topic.hz_std_dev_history.push_back(std_dev.unwrap_or(0.0));
                     if topic.hz_std_dev_history.len() > CHARTS_MAX_DATA_POINTS {
-                        topic.hz_std_dev_history.remove(0);
+                        topic.hz_std_dev_history.pop_front();
                     }
                 }
             }
@@ -163,17 +163,17 @@ impl App {
                     topic.delay = Some(delay);
                     topic.delay_std_dev = std_dev; // Store current std dev for display
                     topic.delay_status = MeasurementStatus::HasValue;
-                    topic.delay_history.push(delay * 1000.0); // Store in ms
+                    topic.delay_history.push_back(delay * 1000.0); // Store in ms
                     if topic.delay_history.len() > CHARTS_MAX_DATA_POINTS {
-                        topic.delay_history.remove(0);
+                        topic.delay_history.pop_front();
                     }
 
                     // Store std dev for potential Bollinger bands, use 0.0 if no std dev available
                     topic
                         .delay_std_dev_history
-                        .push(std_dev.map(|x| x * 1000.0).unwrap_or(0.0)); // Convert to ms
+                        .push_back(std_dev.map(|x| x * 1000.0).unwrap_or(0.0)); // Convert to ms
                     if topic.delay_std_dev_history.len() > CHARTS_MAX_DATA_POINTS {
-                        topic.delay_std_dev_history.remove(0);
+                        topic.delay_std_dev_history.pop_front();
                     }
                 }
             }
