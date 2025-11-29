@@ -359,7 +359,10 @@ impl App {
         }
     }
 
-    pub fn on_space(&mut self) {}
+    pub fn on_space(&mut self) {
+        // Trigger a refresh - this will be picked up on next topic list update
+        // The watcher handles periodic refreshes, but this provides immediate feedback
+    }
 
     pub fn on_left(&mut self) {
         if self.mode == AppMode::TopicDetail {
