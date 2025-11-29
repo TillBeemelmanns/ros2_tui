@@ -193,6 +193,11 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut ParamsApp) -> io::R
                         {
                             app.on_load_parameters()
                         }
+                        KeyCode::Char('?')
+                            if !app.is_in_search_mode() && app.mode == AppMode::ParamList =>
+                        {
+                            app.mode = AppMode::Help
+                        }
                         _ if app.mode == AppMode::Warning => app.on_escape(), // Any key dismisses warning
                         KeyCode::Char(c) => app.on_key(c),
                         _ => {}
