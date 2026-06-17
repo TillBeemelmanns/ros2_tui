@@ -187,10 +187,10 @@ When you push a tag such as `v0.3.0`, the hook calls `scripts/check-release-vers
 
 | Tool | Language | Dependencies | Features | Performance |
 |------|----------|-------------|----------|-------------|
-| topics | Rust | ros2 CLI only | TUI, Real-time metrics | ⚡ Fast |
-| params | Rust | ros2 CLI only | TUI, Parameter management | ⚡ Fast |
+| topics (ours) | Rust | ros2 CLI only | TUI, Real-time metrics | ⚡ Fast & Easy |
+| params (ours) | Rust | ros2 CLI only | TUI, Parameter management | ⚡ Fast & Easy |
 | rqt_topic | Python | Full ROS2 + Qt | GUI, Rich features | 🐌 Heavy |
-| ros2 topic | Python | Full ROS2 | CLI only | 🚀 Fast but limited |
+| ros2 topic | Python | Full ROS2 | CLI only | 🚀 Fast but cumbersome |
 
 ## Contributing
 
