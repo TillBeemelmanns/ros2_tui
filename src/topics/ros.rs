@@ -87,14 +87,12 @@ impl From<std::io::Error> for TopicError {
 pub async fn get_topic_list() -> Result<Vec<TopicInfo>, TopicError> {
     crate::debug_log("Executing: ros2 topic list -v --spin-time 0.5");
     let start = std::time::Instant::now();
-    let output = Command::new("ros2")
-        .arg("topic")
-        .arg("list")
-        .arg("-v")
-        .arg("--spin-time")
-        .arg("0.5")
-        .output()
-        .await?;
+    let output = crate::common::run_with_timeout(
+        "ros2",
+        &["topic", "list", "-v", "--spin-time", "0.5"],
+        crate::common::ROS2_COMMAND_TIMEOUT,
+    )
+    .await?;
     let duration = start.elapsed();
     crate::debug_log(&format!("ros2 topic list -v took {:?}", duration));
 

@@ -34,7 +34,7 @@ dynamic = ["version"]
 homepage = "https://github.com/TillBeemelmanns/ros2_tui"
 repository = "https://github.com/TillBeemelmanns/ros2_tui"
 documentation = "https://github.com/TillBeemelmanns/ros2_tui#readme"
-changelog = "https://github.com/TillBeemelmanns/ros2_tui/releases"
+changelog = "https://github.com/TillBeemelmanns/ros2_tui/blob/main/CHANGELOG.md"
 
 [tool.maturin]
 bindings = "bin"

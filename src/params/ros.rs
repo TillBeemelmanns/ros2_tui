@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
-use serde_yaml::Value;
+use serde_yaml_ng::Value;
 use std::fmt;
-use tokio::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ParamInfo {
@@ -38,12 +37,13 @@ pub async fn get_param_list() -> Result<Vec<ParamInfo>, ParamError> {
     let start_time = std::time::Instant::now();
 
     crate::debug_log("Executing: ros2 param list");
-    let command_str = "ros2 param list".to_string();
 
-    let output = Command::new("bash")
-        .args(["-c", &command_str])
-        .output()
-        .await?;
+    let output = crate::common::run_with_timeout(
+        "ros2",
+        &["param", "list"],
+        crate::common::ROS2_COMMAND_TIMEOUT,
+    )
+    .await?;
 
     let _duration = start_time.elapsed();
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -199,18 +199,21 @@ pub async fn set_param_value(
     param_name: &str,
     value: &str,
 ) -> Result<String, ParamError> {
-    // Convert value to ROS2-compatible format (remove spaces in arrays to avoid command-line parsing issues)
+    // Normalise array values to ROS2's compact form (e.g. [1,2,3]). Each
+    // argument is passed directly to the process, so values are never split or
+    // interpreted by a shell.
     let ros2_value = convert_to_ros2_format(value);
-    let command_str = format!(
-        "ros2 param set '{}' '{}' {}",
+    crate::debug_log(&format!(
+        "Executing: ros2 param set {} {} {}",
         node_name, param_name, ros2_value
-    );
-    crate::debug_log(&format!("Executing: {}", command_str));
+    ));
 
-    let output = Command::new("bash")
-        .args(["-c", &command_str])
-        .output()
-        .await?;
+    let output = crate::common::run_with_timeout(
+        "ros2",
+        &["param", "set", node_name, param_name, &ros2_value],
+        crate::common::ROS2_COMMAND_TIMEOUT,
+    )
+    .await?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -242,12 +245,12 @@ pub async fn set_param_value(
 }
 
 pub async fn dump_params(node_name: &str, file_path: &str) -> Result<(), ParamError> {
-    let command_str = format!("ros2 param dump {} > {}", node_name, file_path);
-
-    let output = Command::new("bash")
-        .args(["-c", &command_str])
-        .output()
-        .await?;
+    let output = crate::common::run_with_timeout(
+        "ros2",
+        &["param", "dump", node_name],
+        crate::common::ROS2_COMMAND_TIMEOUT,
+    )
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -257,16 +260,21 @@ pub async fn dump_params(node_name: &str, file_path: &str) -> Result<(), ParamEr
         )));
     }
 
+    // Write the captured YAML to the target file ourselves rather than relying
+    // on a shell `>` redirect, so paths with spaces or shell metacharacters are
+    // handled safely.
+    tokio::fs::write(file_path, &output.stdout).await?;
+
     Ok(())
 }
 
 pub async fn load_params(node_name: &str, file_path: &str) -> Result<(), ParamError> {
-    let command_str = format!("ros2 param load {} {}", node_name, file_path);
-
-    let output = Command::new("bash")
-        .args(["-c", &command_str])
-        .output()
-        .await?;
+    let output = crate::common::run_with_timeout(
+        "ros2",
+        &["param", "load", node_name, file_path],
+        crate::common::ROS2_COMMAND_TIMEOUT,
+    )
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -280,12 +288,12 @@ pub async fn load_params(node_name: &str, file_path: &str) -> Result<(), ParamEr
 }
 
 pub async fn get_params_for_node(node_name: &str) -> Result<Vec<ParamInfo>, ParamError> {
-    let command_str = format!("ros2 param list {}", node_name);
-
-    let output = Command::new("bash")
-        .args(["-c", &command_str])
-        .output()
-        .await?;
+    let output = crate::common::run_with_timeout(
+        "ros2",
+        &["param", "list", node_name],
+        crate::common::ROS2_COMMAND_TIMEOUT,
+    )
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -316,12 +324,13 @@ pub async fn get_params_for_node(node_name: &str) -> Result<Vec<ParamInfo>, Para
 // New improved implementation using ros2 param dump
 pub async fn get_node_list() -> Result<Vec<String>, ParamError> {
     crate::debug_log("Executing: ros2 node list");
-    let command_str = "ros2 node list".to_string();
 
-    let output = Command::new("bash")
-        .args(["-c", &command_str])
-        .output()
-        .await?;
+    let output = crate::common::run_with_timeout(
+        "ros2",
+        &["node", "list"],
+        crate::common::ROS2_COMMAND_TIMEOUT,
+    )
+    .await?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -350,12 +359,13 @@ pub async fn get_node_list() -> Result<Vec<String>, ParamError> {
 
 pub async fn get_node_params_dump(node_name: &str) -> Result<Vec<ParamInfo>, ParamError> {
     crate::debug_log(&format!("Executing: ros2 param dump {}", node_name));
-    let command_str = format!("ros2 param dump '{}'", node_name);
 
-    let output = Command::new("bash")
-        .args(["-c", &command_str])
-        .output()
-        .await?;
+    let output = crate::common::run_with_timeout(
+        "ros2",
+        &["param", "dump", node_name],
+        crate::common::ROS2_COMMAND_TIMEOUT,
+    )
+    .await?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -388,7 +398,7 @@ fn parse_param_dump_yaml(
     }
 
     // Parse YAML
-    let yaml_value: Value = serde_yaml::from_str(yaml_content)
+    let yaml_value: Value = serde_yaml_ng::from_str(yaml_content)
         .map_err(|e| ParamError::ParseError(format!("Failed to parse YAML: {}", e)))?;
 
     let mut params = Vec::new();
@@ -413,7 +423,7 @@ fn parse_nested_params(
     params: &mut Vec<ParamInfo>,
     node_name: &str,
     prefix: &str,
-    param_map: &serde_yaml::Mapping,
+    param_map: &serde_yaml_ng::Mapping,
 ) {
     for (param_name, param_value) in param_map {
         if let Some(param_name_str) = param_name.as_str() {
@@ -542,7 +552,7 @@ fn extract_value_and_type(value: &Value) -> (String, String) {
             (formatted_array, array_type)
         }
         Value::Mapping(_) => (
-            serde_yaml::to_string(value)
+            serde_yaml_ng::to_string(value)
                 .unwrap_or_default()
                 .trim()
                 .to_string(),
@@ -596,11 +606,12 @@ pub async fn get_node_params_with_values(node_name: &str) -> Result<Vec<ParamInf
     ));
 
     // Use ros2 param dump to get all parameters for this specific node
-    let command_str = format!("ros2 param dump '{}'", node_name);
-    let output = Command::new("bash")
-        .args(["-c", &command_str])
-        .output()
-        .await?;
+    let output = crate::common::run_with_timeout(
+        "ros2",
+        &["param", "dump", node_name],
+        crate::common::ROS2_COMMAND_TIMEOUT,
+    )
+    .await?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -613,7 +624,7 @@ pub async fn get_node_params_with_values(node_name: &str) -> Result<Vec<ParamInf
     }
 
     // Parse the YAML output
-    let yaml_value: Value = serde_yaml::from_str(&stdout).map_err(|e| {
+    let yaml_value: Value = serde_yaml_ng::from_str(&stdout).map_err(|e| {
         ParamError::ParseError(format!("Failed to parse YAML for {}: {}", node_name, e))
     })?;
 

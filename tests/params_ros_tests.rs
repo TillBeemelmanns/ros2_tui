@@ -79,7 +79,7 @@ fn test_convert_to_ros2_format() {
 
 #[test]
 fn test_detect_array_element_type() {
-    use serde_yaml::Value;
+    use serde_yaml_ng::Value;
 
     // Test boolean array
     let bool_array = vec![Value::Bool(true), Value::Bool(false)];
@@ -87,15 +87,15 @@ fn test_detect_array_element_type() {
 
     // Test integer array
     let int_array = vec![
-        Value::Number(serde_yaml::Number::from(1)),
-        Value::Number(serde_yaml::Number::from(2)),
+        Value::Number(serde_yaml_ng::Number::from(1)),
+        Value::Number(serde_yaml_ng::Number::from(2)),
     ];
     assert_eq!(detect_array_element_type(&int_array), "Integer");
 
     // Test double array
     let double_array = vec![
-        Value::Number(serde_yaml::Number::from(1.5)),
-        Value::Number(serde_yaml::Number::from(2.5)),
+        Value::Number(serde_yaml_ng::Number::from(1.5)),
+        Value::Number(serde_yaml_ng::Number::from(2.5)),
     ];
     assert_eq!(detect_array_element_type(&double_array), "Double");
 
