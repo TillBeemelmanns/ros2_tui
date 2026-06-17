@@ -6,6 +6,8 @@ Creates realistic automotive/robotics topics with dummy data
 
 import rclpy
 from rclpy.node import Node
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 import numpy as np
 import time
 import math
@@ -53,7 +55,13 @@ class MultiPublisher(Node):
         # Counter for varying data
         self.counter = 0
         self.start_time = time.time()
-        
+
+        # Dedicated callback group for the (blocking) publish timers, kept
+        # separate from the parameter services so param queries stay responsive.
+        # MutuallyExclusive means all timers together occupy at most one executor
+        # thread, leaving the remaining threads free to service param requests.
+        self.timer_callback_group = MutuallyExclusiveCallbackGroup()
+
         # Add interesting timing variations for different message types
         self.timing_patterns = {
             'camera': {'base_hz': 30, 'jitter_ms': 2, 'sine_period': 10.0, 'sine_amplitude': 5.0},
@@ -72,27 +80,34 @@ class MultiPublisher(Node):
     def setup_variable_timers(self):
         """Setup separate timers for different message types with jitter and sine wave variations"""
         self.custom_timers = {}
-        
+
+        # Run all timers in a dedicated callback group so their blocking
+        # time.sleep() jitter does not starve the node's parameter services.
+        # The parameter services stay in the node's default callback group and
+        # are serviced on a separate thread by the MultiThreadedExecutor, which
+        # keeps `ros2 param dump/list` responsive while topics keep publishing.
+        cb_group = self.timer_callback_group
+
         # Camera topics - high frequency with small jitter
         if self.enable_cameras:
-            self.custom_timers['camera'] = self.create_timer(1.0/30, lambda: self.publish_camera_topics())
-            
-        # LiDAR topics - medium frequency with moderate jitter  
+            self.custom_timers['camera'] = self.create_timer(1.0/30, lambda: self.publish_camera_topics(), callback_group=cb_group)
+
+        # LiDAR topics - medium frequency with moderate jitter
         if self.enable_lidars:
-            self.custom_timers['lidar'] = self.create_timer(1.0/10, lambda: self.publish_lidar_topics())
-            
+            self.custom_timers['lidar'] = self.create_timer(1.0/10, lambda: self.publish_lidar_topics(), callback_group=cb_group)
+
         # IMU topics - very high frequency with minimal jitter
         if self.enable_imu:
-            self.custom_timers['imu'] = self.create_timer(1.0/100, lambda: self.publish_imu_topics())
-            
+            self.custom_timers['imu'] = self.create_timer(1.0/100, lambda: self.publish_imu_topics(), callback_group=cb_group)
+
         # Navigation topics - low frequency with high jitter
-        self.custom_timers['nav'] = self.create_timer(1.0/5, lambda: self.publish_nav_topics())
-        
+        self.custom_timers['nav'] = self.create_timer(1.0/5, lambda: self.publish_nav_topics(), callback_group=cb_group)
+
         # AI module topics - variable frequency with high latency variance
-        self.custom_timers['ai_module'] = self.create_timer(1.0/15, lambda: self.publish_ai_module_topics())
-        
+        self.custom_timers['ai_module'] = self.create_timer(1.0/15, lambda: self.publish_ai_module_topics(), callback_group=cb_group)
+
         # Planning topics - very low frequency with high variance
-        self.custom_timers['planning'] = self.create_timer(1.0/2, lambda: self.publish_planning_topics())
+        self.custom_timers['planning'] = self.create_timer(1.0/2, lambda: self.publish_planning_topics(), callback_group=cb_group)
     
     def get_varied_delay(self, category: str) -> float:
         """Calculate delay with jitter and sine wave patterns for more interesting timing"""
@@ -550,14 +565,21 @@ class MultiPublisher(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    
+
     node = MultiPublisher()
-    
+
+    # MultiThreadedExecutor lets the parameter services (default callback group)
+    # run on a separate thread from the blocking publish timers, so tools like
+    # ros2_tui can dump/list this node's parameters without hanging.
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
+
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         node.get_logger().info("Multi-publisher stopped by user")
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
 

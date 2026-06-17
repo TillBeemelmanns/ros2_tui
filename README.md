@@ -30,12 +30,24 @@ cargo install ros2_tui
 ### From Source
 
 ```bash
-git clone https://github.com/TillBeemelmanns/topics.git
-cd topics/topics
+git clone https://github.com/TillBeemelmanns/ros2_tui.git
+cd ros2_tui
 cargo build --release
 ```
 
 The binaries `topics` and `params` will be available at `target/release/`.
+
+### Try it in Docker (no local ROS2 needed)
+
+A self-contained ROS2 Humble environment with dummy publishers and parameters is provided for quickly trying the TUIs:
+
+```bash
+./docker/run.sh topics   # build the image and launch the topics TUI
+./docker/run.sh params   # launch the params TUI
+./docker/run.sh shell    # drop into a ROS2 shell with the binaries on PATH
+```
+
+The container starts the `ros2_tui_test` dummy publishers automatically, so both TUIs come up populated with topics and parameters.
 
 ## Topics TUI (`topics`)
 

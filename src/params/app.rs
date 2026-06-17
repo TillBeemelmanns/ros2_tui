@@ -505,21 +505,19 @@ impl ParamsApp {
                     }
                 }
             }
-            AppMode::DumpParameters | AppMode::LoadParameters => {
-                if self.file_cursor > 0 {
-                    let byte_index = self.byte_index_file();
-                    if byte_index > 0 {
-                        // Find the previous char boundary
-                        let chars: Vec<char> = self.file_input.chars().collect();
-                        let char_index = self.file_cursor - 1;
-                        self.file_input = chars
-                            .into_iter()
-                            .enumerate()
-                            .filter(|(i, _)| *i != char_index)
-                            .map(|(_, c)| c)
-                            .collect();
-                        self.move_file_cursor_left();
-                    }
+            AppMode::DumpParameters | AppMode::LoadParameters if self.file_cursor > 0 => {
+                let byte_index = self.byte_index_file();
+                if byte_index > 0 {
+                    // Find the previous char boundary
+                    let chars: Vec<char> = self.file_input.chars().collect();
+                    let char_index = self.file_cursor - 1;
+                    self.file_input = chars
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i != char_index)
+                        .map(|(_, c)| c)
+                        .collect();
+                    self.move_file_cursor_left();
                 }
             }
             _ => {}

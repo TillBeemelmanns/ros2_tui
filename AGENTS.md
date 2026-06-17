@@ -10,6 +10,7 @@ Core Rust code lives in `src/`. CLI entry points sit in `src/bin/` (`topics.rs`,
 - `cargo clippy --all-targets --all-features -- -D warnings` — lint with zero tolerated warnings.
 - `cargo test` and `cargo check` — run unit/integration suites and catch type regressions early.
 - `maturin develop` — build the Python wheel in editable mode when validating the PyPI package.
+- `./docker/run.sh [topics|params|shell]` — build a ROS2 Humble image with the dummy publishers and run a TUI without a local ROS2 install.
 
 ## Coding Style & Naming Conventions
 Follow `rustfmt` defaults (4-space indent, trailing commas). Modules and files stay `snake_case`; types use `CamelCase`; functions and constants stay `snake_case`/`SCREAMING_SNAKE_CASE`. Prefer explicit error propagation over `unwrap` in the binaries so CLI users receive actionable messages. Use `common::debug_log` for optional tracing instead of ad hoc prints.

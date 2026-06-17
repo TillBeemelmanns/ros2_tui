@@ -14,7 +14,7 @@ use ros2_tui::params::*;
 
 fn main() -> io::Result<()> {
     let matches = Command::new("params")
-        .version("0.1.4")
+        .version(env!("CARGO_PKG_VERSION"))
         .author("Till Beemelmanns")
         .about("A TUI for managing ROS2 parameters")
         .arg(
@@ -83,7 +83,10 @@ fn main() -> io::Result<()> {
     result
 }
 
-fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut ParamsApp) -> io::Result<()> {
+fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut ParamsApp) -> io::Result<()>
+where
+    io::Error: From<B::Error>,
+{
     loop {
         // Process any pending messages from worker threads
         app.try_receive_messages();

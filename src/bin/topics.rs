@@ -14,7 +14,7 @@ use ros2_tui::topics::*;
 
 fn main() -> io::Result<()> {
     let matches = Command::new("topics")
-        .version("0.1.4")
+        .version(env!("CARGO_PKG_VERSION"))
         .author("Till Beemelmanns")
         .about("A TUI for monitoring ROS2 topics")
         .arg(
@@ -102,7 +102,10 @@ fn main() -> io::Result<()> {
     result
 }
 
-fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
+fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()>
+where
+    io::Error: From<B::Error>,
+{
     loop {
         // Process any pending messages from worker threads
         app.try_receive_messages();
