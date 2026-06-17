@@ -8,6 +8,21 @@
 
 A powerful Terminal User Interface (TUI) for monitoring and managing ROS2 topics and parameters in real-time.
 
+## Screenshots
+
+<table>
+  <tr>
+    <td width="33%"><a href="assets/topics_overview.png"><img src="assets/topics_overview.png" alt="Topic overview"></a></td>
+    <td width="33%"><a href="assets/topics_search.png"><img src="assets/topics_search.png" alt="Topic search"></a></td>
+    <td width="33%"><a href="assets/topics_detail.png"><img src="assets/topics_detail.png" alt="Topic details"></a></td>
+  </tr>
+  <tr>
+    <td align="center">Namespace-aware topic tree with live publisher/subscriber counts, Hz, and delay.</td>
+    <td align="center">Fuzzy search to instantly filter topics across the graph.</td>
+    <td align="center">Per-topic detail view with Hz/delay history charts and live message echo.</td>
+  </tr>
+</table>
+
 ## Prerequisites
 
 - ROS2 installed and sourced
