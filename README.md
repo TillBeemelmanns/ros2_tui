@@ -207,8 +207,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Roadmap
 
-- [x] Topic filtering and search (F4 search mode)
-- [x] Hierarchical topic grouping with collapsible groups
-- [x] Add topic message preview/echo functionality  
-- [ ] services app
-- [ ] actions app
+Planned features, improvements, and fixes are tracked in [ROADMAP.md](ROADMAP.md).
