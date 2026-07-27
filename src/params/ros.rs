@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_yaml_ng::Value;
 use std::fmt;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ParamInfo {
@@ -346,14 +347,19 @@ pub async fn get_node_list() -> Result<Vec<String>, ParamError> {
         )));
     }
 
-    let nodes: Vec<String> = stdout
-        .lines()
-        .map(|line| line.trim())
-        .filter(|line| !line.is_empty() && line.starts_with('/'))
-        .map(|line| line.to_string())
-        .collect();
+    let nodes: Vec<String> = {
+        let unique: HashSet<String> = stdout
+            .lines()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty() && line.starts_with('/'))
+            .map(|line| line.to_string())
+            .collect();
+        let mut nodes: Vec<String> = unique.into_iter().collect();
+        nodes.sort();
+        nodes
+    };
 
-    crate::debug_log(&format!("Found {} nodes", nodes.len()));
+    crate::debug_log(&format!("Found {} unique nodes", nodes.len()));
     Ok(nodes)
 }
 
