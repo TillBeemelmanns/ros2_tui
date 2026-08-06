@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_yaml_ng::Value;
-use std::fmt;
 use std::collections::HashSet;
+use std::fmt;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ParamInfo {
