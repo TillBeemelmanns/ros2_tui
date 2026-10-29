@@ -73,7 +73,11 @@ pub struct ParamWatcherHandle {
 }
 
 impl ParamWatcherHandle {
-    pub fn new(sender: Sender<ParamMessage>, refresh_interval: Duration) -> Self {
+    pub fn new(
+        sender: Sender<ParamMessage>,
+        refresh_interval: Duration,
+        initial_fetch: bool,
+    ) -> Self {
         let sender_clone = sender.clone();
         let handle = thread::spawn(move || {
             let mut last_refresh = std::time::Instant::now();
@@ -106,6 +110,10 @@ impl ParamWatcherHandle {
                 thread::sleep(Duration::from_millis(1000));
             }
         });
+
+        if !initial_fetch {
+            return Self { _handle: handle };
+        }
 
         // Initial refresh
         RUNTIME.spawn(async move {

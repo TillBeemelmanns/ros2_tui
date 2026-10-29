@@ -372,15 +372,13 @@ fn render_dump_parameters_dialog(f: &mut Frame, app: &ParamsApp) {
     // First render the background
     render_param_list(f, app);
 
-    if let Some(item) = app.visible_items.get(app.selected_index) {
-        if item.is_group() {
-            let popup = UniformPopup::new("Dump Parameters to File", PopupType::Input)
-                .add_field(PopupField::new("Node", &item.node.name))
-                .add_field(PopupField::new("File Path", &app.file_input).editable(app.file_cursor))
-                .with_footer("Enter - Confirm | Esc - Cancel | ←→ - Move cursor");
+    if let Some(node_name) = &app.file_target_node {
+        let popup = UniformPopup::new("Dump Parameters to File", PopupType::Input)
+            .add_field(PopupField::new("Node", node_name))
+            .add_field(PopupField::new("File Path", &app.file_input).editable(app.file_cursor))
+            .with_footer("Enter - Confirm | Esc - Cancel | ←→ - Move cursor");
 
-            popup.render(f, f.area());
-        }
+        popup.render(f, f.area());
     }
 }
 
@@ -388,15 +386,13 @@ fn render_load_parameters_dialog(f: &mut Frame, app: &ParamsApp) {
     // First render the background
     render_param_list(f, app);
 
-    if let Some(item) = app.visible_items.get(app.selected_index) {
-        if item.is_group() {
-            let popup = UniformPopup::new("Load Parameters from File", PopupType::Input)
-                .add_field(PopupField::new("Node", &item.node.name))
-                .add_field(PopupField::new("File Path", &app.file_input).editable(app.file_cursor))
-                .with_footer("Enter - Confirm | Esc - Cancel | ←→ - Move cursor");
+    if let Some(node_name) = &app.file_target_node {
+        let popup = UniformPopup::new("Load Parameters from File", PopupType::Input)
+            .add_field(PopupField::new("Node", node_name))
+            .add_field(PopupField::new("File Path", &app.file_input).editable(app.file_cursor))
+            .with_footer("Enter - Confirm | Esc - Cancel | ←→ - Move cursor");
 
-            popup.render(f, f.area());
-        }
+        popup.render(f, f.area());
     }
 }
 

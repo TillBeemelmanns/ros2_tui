@@ -64,7 +64,8 @@ pub struct ParamsApp {
 
     // Parameter editing state
     pub edit_state: Option<ParameterEditState>,
-    pub file_input: String, // For load/dump operations
+    pub file_input: String,               // For load/dump operations
+    pub file_target_node: Option<String>, // Node the open dump/load dialog acts on
 
     // Input cursor positions for better UX
     pub edit_cursor: usize,
@@ -81,10 +82,11 @@ pub struct ParamsApp {
 }
 
 impl ParamsApp {
-    pub fn new(refresh_interval: Duration) -> Self {
+    pub fn new(refresh_interval: Duration, initial_fetch: bool) -> Self {
         let (param_sender, param_receiver) = crossbeam::channel::unbounded();
 
-        let param_watcher = ParamWatcherHandle::new(param_sender.clone(), refresh_interval);
+        let param_watcher =
+            ParamWatcherHandle::new(param_sender.clone(), refresh_interval, initial_fetch);
         let (value_watcher, watch_sender) = ParamValueWatcherHandle::new(param_sender);
 
         Self {
@@ -108,6 +110,7 @@ impl ParamsApp {
             expansion_state: HashMap::new(),
             edit_state: None,
             file_input: String::new(),
+            file_target_node: None,
             edit_cursor: 0,
             file_cursor: 0,
             warning_message: String::new(),
@@ -123,23 +126,22 @@ impl ParamsApp {
             ParamMessage::ParamList(params) => {
                 self.error_message = None;
 
-                let new_params_map = params
+                // Replace the map so updated values show up and parameters of
+                // nodes that have gone away disappear. Keep a known value only
+                // when the fresh entry has none.
+                let mut new_params_map = params
                     .into_iter()
                     .map(|p| (format!("{}/{}", p.node_name, p.param_name), p))
                     .collect::<HashMap<_, _>>();
-
-                // Update existing params and add new ones
-                for (key, new_param) in new_params_map {
-                    self.param_map
-                        .entry(key)
-                        .and_modify(|existing_param| {
-                            // Update fields that can change, but preserve state
-                            existing_param.param_name = new_param.param_name.clone();
-                            existing_param.node_name = new_param.node_name.clone();
-                            // Do NOT overwrite value, type, etc.
-                        })
-                        .or_insert(new_param);
+                for (key, new_param) in new_params_map.iter_mut() {
+                    if new_param.value.is_none() {
+                        if let Some(existing) = self.param_map.get(key) {
+                            new_param.value = existing.value.clone();
+                            new_param.param_type = existing.param_type.clone();
+                        }
+                    }
                 }
+                self.param_map = new_params_map;
 
                 // Build tree structure (node -> parameters)
                 let param_list: Vec<ros::ParamInfo> = self.param_map.values().cloned().collect();
@@ -171,10 +173,11 @@ impl ParamsApp {
                 param_type,
             } => {
                 let key = format!("{}/{}", node_name, param_name);
+                // The table reads values straight from `param_map`, so no
+                // tree rebuild is needed here.
                 if let Some(param) = self.param_map.get_mut(&key) {
-                    param.value = Some(value.clone());
-                    param.param_type = param_type.clone();
-                    self.rebuild_visible_items(); // Rebuild visible items to reflect updated value
+                    param.value = Some(value);
+                    param.param_type = param_type;
                 }
             }
             ParamMessage::ParamSetSuccess {
@@ -268,6 +271,13 @@ impl ParamsApp {
     }
 
     pub fn rebuild_visible_items(&mut self) {
+        // Remember the selected row by path so it stays put when rows are
+        // added or removed above it (e.g. by a periodic refresh).
+        let selected_path = self
+            .visible_items
+            .get(self.selected_index)
+            .map(|item| item.node.full_path.clone());
+
         let mut target_tree;
         if self.filter_text.is_empty() {
             target_tree = self.master_tree.clone();
@@ -306,6 +316,15 @@ impl ParamsApp {
             }
         }
         self.visible_items = target_tree.get_flattened_view();
+        if let Some(path) = selected_path {
+            if let Some(index) = self
+                .visible_items
+                .iter()
+                .position(|item| item.node.full_path == path)
+            {
+                self.selected_index = index;
+            }
+        }
         self.clamp_selection();
     }
 
@@ -462,6 +481,7 @@ impl ParamsApp {
                 self.mode = AppMode::ParamList;
                 self.file_input.clear();
                 self.file_cursor = 0;
+                self.file_target_node = None;
             }
             AppMode::Warning => {
                 // Return to previous mode if we have one, otherwise go to ParamList
@@ -527,24 +547,21 @@ impl ParamsApp {
     pub fn on_set_parameter(&mut self) {
         if let Some(item) = self.visible_items.get(self.selected_index) {
             if !item.is_group() {
-                let key = &item.node.full_path;
-                if let Some(param) = self.param_map.get(key) {
-                    let parts: Vec<&str> = key.split('/').collect();
-                    if parts.len() >= 3 {
-                        let node_name = format!("/{}", parts[1]); // Add back the leading slash
-                        let param_name = parts[2..].join("/");
-                        let current_value = param.value.clone().unwrap_or_default();
-                        self.edit_state = Some(ParameterEditState {
-                            node_name,
-                            param_name,
-                            current_value: current_value.clone(),
-                            param_type: param.param_type.clone(),
-                            new_value: current_value.clone(),
-                            is_editing: true,
-                        });
-                        self.edit_cursor = current_value.chars().count(); // Set cursor at end of current value
-                        self.mode = AppMode::SetParameter;
-                    }
+                // Take node and parameter names from the entry itself: splitting
+                // the "node/param" key on '/' breaks for namespaced nodes such
+                // as /robot/driver.
+                if let Some(param) = self.param_map.get(&item.node.full_path) {
+                    let current_value = param.value.clone().unwrap_or_default();
+                    self.edit_state = Some(ParameterEditState {
+                        node_name: param.node_name.clone(),
+                        param_name: param.param_name.clone(),
+                        current_value: current_value.clone(),
+                        param_type: param.param_type.clone(),
+                        new_value: current_value.clone(),
+                        is_editing: true,
+                    });
+                    self.edit_cursor = current_value.chars().count(); // Set cursor at end of current value
+                    self.mode = AppMode::SetParameter;
                 }
             }
         }
@@ -554,9 +571,7 @@ impl ParamsApp {
         if let Some(item) = self.visible_items.get(self.selected_index) {
             if item.is_group() {
                 // Dump parameters for the selected node
-                self.file_input = format!("{}.yaml", item.node.name);
-                self.file_cursor = self.file_input.chars().count(); // Set cursor at end
-                self.mode = AppMode::DumpParameters;
+                self.open_file_dialog(AppMode::DumpParameters);
             } else {
                 // Show warning for single parameter
                 self.warning_message = "Parameter dumping only works with nodes, not with single parameters. Navigate to a specific node to execute parameter dumping.".to_string();
@@ -570,9 +585,7 @@ impl ParamsApp {
         if let Some(item) = self.visible_items.get(self.selected_index) {
             if item.is_group() {
                 // Load parameters for the selected node
-                self.file_input = format!("{}.yaml", item.node.name);
-                self.file_cursor = self.file_input.chars().count(); // Set cursor at end
-                self.mode = AppMode::LoadParameters;
+                self.open_file_dialog(AppMode::LoadParameters);
             } else {
                 // Show warning for single parameter
                 self.warning_message = "Parameter loading only works with nodes, not with single parameters. Navigate to a specific node to execute parameter loading.".to_string();
@@ -598,11 +611,40 @@ impl ParamsApp {
         }
     }
 
+    /// Open the dump/load dialog for the node owning the selected group.
+    ///
+    /// A group is either a node (`/robot/driver`) or a parameter namespace
+    /// inside one (`/robot/driver/camera`), so the node name is taken from the
+    /// group's parameters rather than from the group's label.
+    fn open_file_dialog(&mut self, mode: AppMode) {
+        let node_name = self
+            .visible_items
+            .get(self.selected_index)
+            .and_then(|item| {
+                item.node
+                    .children
+                    .values()
+                    .find_map(|child| child.data.as_ref())
+            })
+            .map(|data| data.node_name.clone());
+        if let Some(node_name) = node_name {
+            // A relative file name: "/robot/driver" -> "robot_driver.yaml".
+            // Using the node name verbatim would point at the filesystem root.
+            self.file_input = format!(
+                "{}.yaml",
+                node_name.trim_start_matches('/').replace('/', "_")
+            );
+            self.file_cursor = self.file_input.chars().count(); // Set cursor at end
+            self.file_target_node = Some(node_name);
+            self.mode = mode;
+        }
+    }
+
     pub fn confirm_dump_parameters(&mut self) {
-        if let Some(item) = self.visible_items.get(self.selected_index) {
-            if item.is_group() && !self.file_input.is_empty() {
+        if let Some(node_name) = self.file_target_node.take() {
+            if !self.file_input.is_empty() {
                 let _ = self.watch_sender.send(ParamWatchMessage::DumpParam {
-                    node_name: item.node.name.clone(),
+                    node_name,
                     file_path: self.file_input.clone(),
                 });
             }
@@ -612,10 +654,10 @@ impl ParamsApp {
     }
 
     pub fn confirm_load_parameters(&mut self) {
-        if let Some(item) = self.visible_items.get(self.selected_index) {
-            if item.is_group() && !self.file_input.is_empty() {
+        if let Some(node_name) = self.file_target_node.take() {
+            if !self.file_input.is_empty() {
                 let _ = self.watch_sender.send(ParamWatchMessage::LoadParam {
-                    node_name: item.node.name.clone(),
+                    node_name,
                     file_path: self.file_input.clone(),
                 });
             }

@@ -3,6 +3,7 @@ pub mod command;
 pub mod debug;
 pub mod param_tree;
 pub mod popup;
+pub mod terminal;
 pub mod topic_tree;
 pub mod tree;
 
@@ -11,6 +12,7 @@ pub use command::{run_with_timeout, ROS2_COMMAND_TIMEOUT};
 pub use debug::*;
 pub use param_tree::{ParamTree, ParamTreeItem};
 pub use popup::*;
+pub use terminal::install_panic_hook;
 pub use tree::*;
 
 // Future extensible tree structures are available as:

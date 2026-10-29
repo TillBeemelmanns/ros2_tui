@@ -22,6 +22,7 @@ fn main() -> io::Result<()> {
                 .long("refresh")
                 .value_name("SECONDS")
                 .help("Refresh rate for parameter list in seconds")
+                .value_parser(clap::value_parser!(u64).range(1..))
                 .default_value("5"),
         )
         .arg(
@@ -39,13 +40,9 @@ fn main() -> io::Result<()> {
         )
         .get_matches();
 
-    let refresh_rate: u64 = matches
-        .get_one::<String>("refresh")
-        .unwrap()
-        .parse()
-        .unwrap_or(5); // Default to 5 seconds
+    let refresh_rate = *matches.get_one::<u64>("refresh").unwrap();
 
-    let _skip_initial_fetch = matches.get_flag("no-initial-fetch");
+    let skip_initial_fetch = matches.get_flag("no-initial-fetch");
     let verbose = matches.get_flag("verbose");
 
     // Enable debug logging if verbose flag is set
@@ -66,12 +63,13 @@ fn main() -> io::Result<()> {
     debug_log("ros2 command is available");
 
     // setup terminal
+    install_panic_hook();
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
 
     debug_log("Creating ParamsApp instance...");
-    let mut app = ParamsApp::new(Duration::from_secs(refresh_rate));
+    let mut app = ParamsApp::new(Duration::from_secs(refresh_rate), !skip_initial_fetch);
     debug_log("ParamsApp created successfully");
 
     let result = run_app(&mut terminal, &mut app);
@@ -102,10 +100,12 @@ where
             match event::read()? {
                 Event::Key(key) => {
                     match key.code {
-                        KeyCode::Char('q') => app.on_key('q'),
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             app.should_quit = true
                         }
+                        // Any key dismisses a warning
+                        _ if app.mode == AppMode::Warning => app.on_escape(),
+                        KeyCode::Char('q') => app.on_key('q'),
                         KeyCode::Char('c')
                             if !app.is_in_search_mode() && app.mode == AppMode::ParamList =>
                         {
@@ -201,7 +201,6 @@ where
                         {
                             app.mode = AppMode::Help
                         }
-                        _ if app.mode == AppMode::Warning => app.on_escape(), // Any key dismisses warning
                         KeyCode::Char(c) => app.on_key(c),
                         _ => {}
                     }

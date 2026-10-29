@@ -125,7 +125,10 @@ pub async fn start_topic_hz_stream(topic_name: &str) -> Result<tokio::process::C
         .arg("hz")
         .arg(topic_name)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        // Kill the CLI process when its monitoring task is aborted, so
+        // unwatching a topic or quitting does not leave orphans behind.
+        .kill_on_drop(true)
         .spawn()?;
 
     Ok(child)
@@ -154,7 +157,10 @@ pub async fn start_topic_delay_stream(
     let child = command
         .arg(topic_name)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped()) // "msg does not have header" is printed here
+        // Kill the CLI process when its monitoring task is aborted, so
+        // unwatching a topic or quitting does not leave orphans behind.
+        .kill_on_drop(true)
         .spawn()?;
 
     Ok(child)
@@ -175,7 +181,10 @@ pub async fn start_topic_echo_stream(
         .arg(topic_name)
         .arg("--no-arr") // Don't print array contents
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        // Kill the CLI process when its monitoring task is aborted, so
+        // unwatching a topic or quitting does not leave orphans behind.
+        .kill_on_drop(true)
         .spawn()?;
 
     Ok(child)

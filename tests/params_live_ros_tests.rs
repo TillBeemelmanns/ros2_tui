@@ -1,8 +1,9 @@
 //! Live ROS2 integration tests for the parameter command layer.
 //!
 //! These require a running ROS2 graph with the `ros2_tui_test` dummy nodes and
-//! are therefore `#[ignore]`d by default so the standard `cargo test` run (and
-//! CI, which has no ROS2) stays green. Run them manually with a live graph:
+//! are therefore `#[ignore]`d by default so the standard `cargo test` run stays
+//! green without ROS2. CI runs them per distro in Docker (`ros-integration`
+//! job). Run them manually with a live graph:
 //!
 //! ```bash
 //! ros2 launch ros2_tui_test dummy_publishers.launch.py &

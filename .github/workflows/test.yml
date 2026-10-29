@@ -36,3 +36,38 @@ jobs:
     
     - name: Build release
       run: cargo build --release --verbose
+
+  ros-integration:
+    name: ROS2 ${{ matrix.ros_distro }} integration
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ros_distro: [humble, lyrical]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build ROS2 ${{ matrix.ros_distro }} image
+      run: |
+        docker build \
+          --build-arg ROS_DISTRO=${{ matrix.ros_distro }} \
+          -t ros2_tui:${{ matrix.ros_distro }} \
+          -f docker/Dockerfile .
+
+    # Runs the full suite, including the ignored live-graph tests, against the
+    # dummy publishers so ros2 CLI output changes in a distro are caught.
+    - name: Run tests against live ROS2 graph
+      run: |
+        docker run --rm --entrypoint /bin/bash ros2_tui:${{ matrix.ros_distro }} -c '
+          set -e
+          source /opt/ros/$ROS_DISTRO/setup.bash
+          source /ros2_ws/install/setup.bash
+          ros2 launch ros2_tui_test dummy_publishers.launch.py > /tmp/publishers.log 2>&1 &
+          for i in $(seq 1 30); do
+            ros2 node list 2>/dev/null | grep -q /param_setter && break
+            sleep 1
+          done
+          cd /ros2_tui
+          cargo test --release -- --include-ignored
+        '

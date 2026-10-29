@@ -58,10 +58,15 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(refresh_interval: Duration, _detail_refresh_interval: Duration) -> Self {
+    pub fn new(
+        refresh_interval: Duration,
+        _detail_refresh_interval: Duration,
+        initial_fetch: bool,
+    ) -> Self {
         let (topic_sender, topic_receiver) = crossbeam::channel::unbounded();
 
-        let topic_watcher = TopicWatcherHandle::new(topic_sender.clone(), refresh_interval);
+        let topic_watcher =
+            TopicWatcherHandle::new(topic_sender.clone(), refresh_interval, initial_fetch);
         let (detail_watcher, watch_sender) = TopicDetailWatcherHandle::new(topic_sender);
 
         Self {
@@ -138,7 +143,7 @@ impl App {
                 hz,
                 std_dev,
             } => {
-                if let Some(topic) = self.topic_map.get_mut(&topic_name) {
+                if let Some(topic) = self.watched_topic_mut(&topic_name) {
                     topic.hz = Some(hz);
                     topic.hz_std_dev = std_dev; // Store current std dev for display
                     topic.hz_status = MeasurementStatus::HasValue;
@@ -159,7 +164,7 @@ impl App {
                 delay,
                 std_dev,
             } => {
-                if let Some(topic) = self.topic_map.get_mut(&topic_name) {
+                if let Some(topic) = self.watched_topic_mut(&topic_name) {
                     topic.delay = Some(delay);
                     topic.delay_std_dev = std_dev; // Store current std dev for display
                     topic.delay_status = MeasurementStatus::HasValue;
@@ -178,14 +183,14 @@ impl App {
                 }
             }
             TopicMessage::TopicHzStatusUpdate { topic_name, status } => {
-                if let Some(topic) = self.topic_map.get_mut(&topic_name) {
+                if let Some(topic) = self.watched_topic_mut(&topic_name) {
                     if !matches!(topic.hz_status, MeasurementStatus::HasValue) {
                         topic.hz_status = status;
                     }
                 }
             }
             TopicMessage::TopicDelayStatusUpdate { topic_name, status } => {
-                if let Some(topic) = self.topic_map.get_mut(&topic_name) {
+                if let Some(topic) = self.watched_topic_mut(&topic_name) {
                     if !matches!(topic.delay_status, MeasurementStatus::HasValue) {
                         topic.delay_status = status;
                     }
@@ -195,7 +200,7 @@ impl App {
                 topic_name,
                 std_dev,
             } => {
-                if let Some(topic) = self.topic_map.get_mut(&topic_name) {
+                if let Some(topic) = self.watched_topic_mut(&topic_name) {
                     // Update the most recent std_dev value in history without adding new Hz data
                     if !topic.hz_std_dev_history.is_empty() {
                         let last_idx = topic.hz_std_dev_history.len() - 1;
@@ -208,7 +213,7 @@ impl App {
                 topic_name,
                 std_dev,
             } => {
-                if let Some(topic) = self.topic_map.get_mut(&topic_name) {
+                if let Some(topic) = self.watched_topic_mut(&topic_name) {
                     // Update the most recent std_dev value in history without adding new delay data
                     if !topic.delay_std_dev_history.is_empty() {
                         let last_idx = topic.delay_std_dev_history.len() - 1;
@@ -244,6 +249,12 @@ impl App {
         }
     }
 
+    /// Look up a topic only if it is being watched. Metric updates can still
+    /// arrive briefly after a topic is unwatched and must not resurrect values.
+    fn watched_topic_mut(&mut self, topic_name: &str) -> Option<&mut ros::TopicInfo> {
+        self.topic_map.get_mut(topic_name).filter(|t| t.watched)
+    }
+
     pub fn try_receive_messages(&mut self) {
         while let Ok(msg) = self.message_receiver.try_recv() {
             self.handle_message(msg);
@@ -251,6 +262,12 @@ impl App {
     }
 
     pub fn rebuild_visible_items(&mut self) {
+        // Remember the selected row by path so it stays put when rows are
+        // added or removed above it (e.g. by a periodic topic list refresh).
+        let selected_path = self
+            .get_selected_item()
+            .map(|item| item.node.full_path.clone());
+
         let mut target_tree;
         if self.filter_text.is_empty() {
             // No filter, use the master tree which respects manual expansion state
@@ -284,6 +301,15 @@ impl App {
             }
         }
         self.visible_items = target_tree.get_flattened_view();
+        if let Some(path) = selected_path {
+            if let Some(index) = self
+                .visible_items
+                .iter()
+                .position(|item| item.node.full_path == path)
+            {
+                self.selected_index = index;
+            }
+        }
         self.clamp_selection();
     }
 
@@ -304,6 +330,7 @@ impl App {
                     }
                 }
                 'd' => self.enter_detail_view(),
+                'r' => self.refresh(),
                 's' => self.toggle_sim_time(),
                 '?' => self.mode = AppMode::Help,
                 _ => {}
@@ -344,7 +371,11 @@ impl App {
                 }
             }
             AppMode::TopicDetail => {
-                self.toggle_watch_current_topic();
+                // Use the topic the detail view was opened for: the list
+                // selection may have moved since, e.g. after a refresh.
+                if let Some(topic_name) = self.selected_topic_name.clone() {
+                    self.toggle_watch(&topic_name);
+                }
             }
             _ => {}
         }
@@ -360,8 +391,14 @@ impl App {
     }
 
     pub fn on_space(&mut self) {
-        // Trigger a refresh - this will be picked up on next topic list update
-        // The watcher handles periodic refreshes, but this provides immediate feedback
+        if self.mode != AppMode::Search {
+            self.refresh();
+        }
+    }
+
+    /// Fetch the topic list now instead of waiting for the next periodic refresh.
+    pub fn refresh(&mut self) {
+        self.topic_watcher.refresh();
     }
 
     pub fn on_left(&mut self) {
@@ -518,7 +555,7 @@ impl App {
         }
     }
 
-    pub fn shutdown(&self) {
+    pub fn shutdown(&mut self) {
         self.topic_watcher.shutdown();
         self.detail_watcher.shutdown();
     }
@@ -562,33 +599,38 @@ impl App {
     }
 
     pub fn toggle_watch_current_topic(&mut self) {
-        if let Some(item) = self.get_selected_item() {
-            if let Some(topic_info) = item.get_topic_info() {
-                let topic_name = topic_info.name.clone();
-                if let Some(topic) = self.topic_map.get_mut(&topic_name) {
-                    topic.watched = !topic.watched;
-                    if topic.watched {
-                        topic.hz_status = MeasurementStatus::Loading(0);
-                        topic.delay_status = MeasurementStatus::Loading(0);
-                        topic.hz_history.clear();
-                        topic.hz_std_dev_history.clear();
-                        topic.delay_history.clear();
-                        topic.delay_std_dev_history.clear();
-                        let _ = self
-                            .watch_sender
-                            .send(WatchMessage::StartContinuousMetrics(topic.name.clone()));
-                    } else {
-                        topic.hz = None;
-                        topic.hz_std_dev = None;
-                        topic.delay = None;
-                        topic.delay_std_dev = None;
-                        topic.hz_status = MeasurementStatus::NotMeasuring;
-                        topic.delay_status = MeasurementStatus::NotMeasuring;
-                        let _ = self
-                            .watch_sender
-                            .send(WatchMessage::StopContinuousMetrics(topic.name.clone()));
-                    }
-                }
+        let topic_name = self
+            .get_selected_item()
+            .and_then(|item| item.get_topic_info())
+            .map(|topic_info| topic_info.name.clone());
+        if let Some(topic_name) = topic_name {
+            self.toggle_watch(&topic_name);
+        }
+    }
+
+    fn toggle_watch(&mut self, topic_name: &str) {
+        if let Some(topic) = self.topic_map.get_mut(topic_name) {
+            topic.watched = !topic.watched;
+            if topic.watched {
+                topic.hz_status = MeasurementStatus::Loading(0);
+                topic.delay_status = MeasurementStatus::Loading(0);
+                topic.hz_history.clear();
+                topic.hz_std_dev_history.clear();
+                topic.delay_history.clear();
+                topic.delay_std_dev_history.clear();
+                let _ = self
+                    .watch_sender
+                    .send(WatchMessage::StartContinuousMetrics(topic.name.clone()));
+            } else {
+                topic.hz = None;
+                topic.hz_std_dev = None;
+                topic.delay = None;
+                topic.delay_std_dev = None;
+                topic.hz_status = MeasurementStatus::NotMeasuring;
+                topic.delay_status = MeasurementStatus::NotMeasuring;
+                let _ = self
+                    .watch_sender
+                    .send(WatchMessage::StopContinuousMetrics(topic.name.clone()));
             }
         }
     }
@@ -645,29 +687,25 @@ impl App {
     }
 
     fn collapse_all(&mut self) {
-        Self::set_all_expanded_static(&mut self.master_tree.root, false);
-        // Update expansion state tracking
-        for key in self.expansion_state.keys().cloned().collect::<Vec<_>>() {
-            self.expansion_state.insert(key, false);
-        }
+        Self::set_all_expanded_static(&mut self.master_tree.root, false, &mut self.expansion_state);
     }
 
     fn expand_all(&mut self) {
-        Self::set_all_expanded_static(&mut self.master_tree.root, true);
-        // Update expansion state tracking
-        for key in self.expansion_state.keys().cloned().collect::<Vec<_>>() {
-            self.expansion_state.insert(key, true);
-        }
+        Self::set_all_expanded_static(&mut self.master_tree.root, true, &mut self.expansion_state);
     }
 
+    /// Set every group's expansion and record it for every group, not just the
+    /// ones toggled before, so the next topic list refresh preserves it.
     fn set_all_expanded_static(
         nodes: &mut std::collections::HashMap<String, crate::tree::TopicTreeNode>,
         expanded: bool,
+        expansion_state: &mut HashMap<String, bool>,
     ) {
         for node in nodes.values_mut() {
             if !node.is_leaf {
                 node.is_expanded = expanded;
-                Self::set_all_expanded_static(&mut node.children, expanded);
+                expansion_state.insert(node.full_path.clone(), expanded);
+                Self::set_all_expanded_static(&mut node.children, expanded, expansion_state);
             }
         }
     }

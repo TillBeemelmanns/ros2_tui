@@ -1,0 +1,4 @@
+# Keep host build output and VCS data out of the image build context
+target/
+.git/
+*.log

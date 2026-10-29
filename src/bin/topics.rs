@@ -22,6 +22,7 @@ fn main() -> io::Result<()> {
                 .long("refresh")
                 .value_name("SECONDS")
                 .help("Refresh rate for topic list in seconds")
+                .value_parser(clap::value_parser!(u64).range(1..))
                 .default_value("5"),
         )
         .arg(
@@ -29,6 +30,7 @@ fn main() -> io::Result<()> {
                 .long("detail-refresh")
                 .value_name("SECONDS")
                 .help("Refresh rate for topic details in seconds")
+                .value_parser(clap::value_parser!(u64).range(1..))
                 .default_value("30"),
         )
         .arg(
@@ -46,19 +48,11 @@ fn main() -> io::Result<()> {
         )
         .get_matches();
 
-    let refresh_rate: u64 = matches
-        .get_one::<String>("refresh")
-        .unwrap()
-        .parse()
-        .unwrap_or(5); // Default to 5 seconds
+    let refresh_rate = *matches.get_one::<u64>("refresh").unwrap();
 
-    let detail_refresh_rate: u64 = matches
-        .get_one::<String>("detail-refresh")
-        .unwrap()
-        .parse()
-        .unwrap_or(30);
+    let detail_refresh_rate = *matches.get_one::<u64>("detail-refresh").unwrap();
 
-    let _skip_initial_fetch = matches.get_flag("no-initial-fetch");
+    let skip_initial_fetch = matches.get_flag("no-initial-fetch");
     let verbose = matches.get_flag("verbose");
 
     // Enable debug logging if verbose flag is set
@@ -82,6 +76,7 @@ fn main() -> io::Result<()> {
     debug_log("ros2 command is available");
 
     // setup terminal
+    install_panic_hook();
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
@@ -90,6 +85,7 @@ fn main() -> io::Result<()> {
     let mut app = App::new(
         Duration::from_secs(refresh_rate),
         Duration::from_secs(detail_refresh_rate),
+        !skip_initial_fetch,
     );
     debug_log("App created successfully");
 
