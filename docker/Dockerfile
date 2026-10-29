@@ -1,4 +1,8 @@
-FROM ros:humble
+ARG ROS_DISTRO=humble
+FROM ros:${ROS_DISTRO}
+
+# Re-declare after FROM so the value is visible inside this build stage
+ARG ROS_DISTRO
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -6,13 +10,13 @@ ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     curl \
     python3-colcon-common-extensions \
-    ros-humble-std-msgs \
-    ros-humble-sensor-msgs \
-    ros-humble-geometry-msgs \
-    ros-humble-nav-msgs \
-    ros-humble-tf2-msgs \
-    ros-humble-visualization-msgs \
-    ros-humble-cv-bridge \
+    ros-${ROS_DISTRO}-std-msgs \
+    ros-${ROS_DISTRO}-sensor-msgs \
+    ros-${ROS_DISTRO}-geometry-msgs \
+    ros-${ROS_DISTRO}-nav-msgs \
+    ros-${ROS_DISTRO}-tf2-msgs \
+    ros-${ROS_DISTRO}-visualization-msgs \
+    ros-${ROS_DISTRO}-cv-bridge \
     python3-numpy \
     && rm -rf /var/lib/apt/lists/*
 
@@ -27,14 +31,14 @@ COPY . .
 
 # Build the test publisher ROS2 package
 RUN /bin/bash -c "\
-    source /opt/ros/humble/setup.bash && \
+    source /opt/ros/${ROS_DISTRO}/setup.bash && \
     mkdir -p /ros2_ws/src && \
     cp -r /ros2_tui/tests/test_publisher /ros2_ws/src/ros2_tui_test && \
     cd /ros2_ws && \
     colcon build --packages-select ros2_tui_test"
 
 # Build the Rust binaries in release mode
-RUN /bin/bash -c "source /opt/ros/humble/setup.bash && cargo build --release"
+RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cargo build --release"
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

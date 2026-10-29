@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- ROS2 Lyrical Luth support. Both TUIs and the `ros2_tui_test` fixtures are
+  verified against Lyrical; `docker/run.sh` now honours `ROS_DISTRO`
+  (e.g. `ROS_DISTRO=lyrical ./docker/run.sh topics`, default `humble`).
+
+### Fixed
+- Dropped the obsolete `tests_require` option from the test publisher's
+  `setup.py`, which newer setuptools reports as an unknown option.
+
 ## [0.1.6] - 2026-06-17
 
 ### Security

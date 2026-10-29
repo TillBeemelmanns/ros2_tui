@@ -79,7 +79,7 @@ See [CHANGELOG.md](CHANGELOG.md) for what has already shipped.
 
 - [ ] **Declare an MSRV** — add `rust-version` to `Cargo.toml` and a pinned-toolchain
   job to CI so the minimum supported Rust is explicit and enforced.
-- [ ] **Multi-distro ROS2 CI matrix** — currently only Humble is exercised
-  (locally, via Docker); add Jazzy/Rolling to catch CLI output drift.
+- [ ] **Multi-distro ROS2 CI matrix** — Humble and Lyrical are exercised
+  locally via Docker (`ROS_DISTRO=...`); run both in CI to catch CLI output drift.
 - [ ] **Verify the wheel build in CI** — run `maturin build` on PRs so packaging
   regressions are caught before a release tag.

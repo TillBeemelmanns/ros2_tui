@@ -18,7 +18,6 @@ setup(
     maintainer_email='till.beemelmanns@example.com',
     description='Test publishers and parameter setters for debugging ros2_tui',
     license='MIT',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'dummy_publisher = ros2_tui_test.dummy_publisher:main',

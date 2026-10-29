@@ -54,12 +54,14 @@ The binaries `topics` and `params` will be available at `target/release/`.
 
 ### Try it in Docker (no local ROS2 needed)
 
-A self-contained ROS2 Humble environment with dummy publishers and parameters is provided for quickly trying the TUIs:
+A self-contained ROS2 environment (Humble by default) with dummy publishers and parameters is provided for quickly trying the TUIs:
 
 ```bash
 ./docker/run.sh topics   # build the image and launch the topics TUI
 ./docker/run.sh params   # launch the params TUI
 ./docker/run.sh shell    # drop into a ROS2 shell with the binaries on PATH
+
+ROS_DISTRO=lyrical ./docker/run.sh topics   # use another distro, e.g. Lyrical
 ```
 
 The container starts the `ros2_tui_test` dummy publishers automatically, so both TUIs come up populated with topics and parameters.

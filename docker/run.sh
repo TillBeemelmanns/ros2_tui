@@ -5,15 +5,20 @@
 #   ./docker/run.sh params     # run params TUI with dummy publishers
 #   ./docker/run.sh shell      # drop into bash inside the container
 #   ./docker/run.sh build      # only (re)build the image, don't run
+#
+# Set ROS_DISTRO to pick the ROS2 distribution (default: humble), e.g.
+#   ROS_DISTRO=lyrical ./docker/run.sh topics
 
 set -e
 
-IMAGE="ros2_tui:dev"
+ROS_DISTRO="${ROS_DISTRO:-humble}"
+IMAGE="ros2_tui:${ROS_DISTRO}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 build_image() {
     echo "==> Building Docker image '$IMAGE'..."
     docker build \
+        --build-arg ROS_DISTRO="$ROS_DISTRO" \
         -t "$IMAGE" \
         -f "$REPO_ROOT/docker/Dockerfile" \
         "$REPO_ROOT"
@@ -44,9 +49,9 @@ case "$CMD" in
             --name "ros2_tui_dev" \
             --entrypoint /bin/bash \
             "$IMAGE" \
-            -c "source /opt/ros/humble/setup.bash && \
+            -c "source /opt/ros/\$ROS_DISTRO/setup.bash && \
                 source /ros2_ws/install/setup.bash && \
-                echo 'ROS2 Humble ready. Binaries: topics, params (in /ros2_tui/target/release/)' && \
+                echo \"ROS2 \$ROS_DISTRO ready. Binaries: topics, params (in /ros2_tui/target/release/)\" && \
                 exec bash"
     ;;
     topics|params)
