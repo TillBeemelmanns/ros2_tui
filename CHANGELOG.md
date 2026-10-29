@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-10-29
+
 ### Added
 - ROS2 Lyrical Luth support. Both TUIs and the `ros2_tui_test` fixtures are
   verified against Lyrical; `docker/run.sh` now honours `ROS_DISTRO`
@@ -99,7 +101,8 @@ Releases [0.1.0] through [0.1.4] predate this changelog. See the
 [GitHub releases](https://github.com/TillBeemelmanns/ros2_tui/releases) for
 their history.
 
-[Unreleased]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.7...v0.1.8
 [0.1.6]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/TillBeemelmanns/ros2_tui/releases/tag/v0.1.4
