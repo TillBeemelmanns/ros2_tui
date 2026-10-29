@@ -1,3 +1,4 @@
+use crossterm::event::DisableMouseCapture;
 use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
 
@@ -9,6 +10,7 @@ pub fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
+        let _ = std::io::stdout().execute(DisableMouseCapture);
         let _ = std::io::stdout().execute(LeaveAlternateScreen);
         default_hook(info);
     }));

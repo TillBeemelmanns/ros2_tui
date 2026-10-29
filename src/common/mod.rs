@@ -1,6 +1,7 @@
 pub mod abstract_tree;
 pub mod command;
 pub mod debug;
+pub mod graphics;
 pub mod param_tree;
 pub mod popup;
 pub mod terminal;

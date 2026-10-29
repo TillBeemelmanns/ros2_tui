@@ -73,6 +73,9 @@ The container starts the `ros2_tui_test` dummy publishers automatically, so both
 - 🌳 Namespace-aware topic tree with collapsible groups and instant search
 - 🎯 Watch-only metrics so large graphs stay responsive and low overhead
 - 🎨 Status indicators, Bollinger-band charts, and debug logging for on-call triage
+- 🖼️ Live image viewer for `sensor_msgs/Image` and `CompressedImage` topics, in full resolution on terminals with the kitty graphics protocol (Ghostty, kitty, WezTerm), even over SSH
+- 🛰️ Point cloud and laser scan viewer for `sensor_msgs/PointCloud2` and `LaserScan`: top-down, orbiting 3D and side views with statistics
+- 🩺 Diagnostics viewer for `diagnostic_msgs/DiagnosticArray` (`/diagnostics`): every driver's status in one table, worst first, with stale detection
 
 ### Usage
 ```bash
@@ -90,6 +93,7 @@ Toggling a row with `Enter` starts Hz/Delay measurement. Unwatched topics stay l
 - `Enter` toggles watching on the focused topic or expands/collapses a group
 - `d` opens the detail view, where `Tab` switches between the info and echo panes; `c` collapses/expands all groups at once
 - `s` toggles simulation time when measuring delay metrics
+- `v` opens the viewer on an image, point cloud, laser scan or diagnostics topic (marked `◉` in the `V` column), from the list or the detail view; `+`/`-` change the frame rate limit (1–30 fps, default 10), `p` pauses, `q`/`Esc` go back
 - `F4` opens live search with auto-expansion; `Space`, `r`, or `F5` refresh immediately
 - `q`, `Esc`, or `Ctrl+C` quit; `--verbose` writes detailed logs to `topics_debug.log`
 
@@ -98,6 +102,29 @@ Toggling a row with `Enter` starts Hz/Delay measurement. Unwatched topics stay l
 - `--detail-refresh <SECONDS>` – Legacy detail polling interval (still accepted)
 - `--no-initial-fetch` – Skip the initial `ros2 topic list` call
 - `--help`, `--version` – Standard metadata flags
+
+### Image Viewer
+- Supported encodings: `rgb8`, `bgr8`, `rgba8`, `bgra8`, `mono8`, `mono16`, 16-bit color, `yuv422`/`uyvy`, `yuv422_yuy2`/`yuyv`, `bayer_*8`, and depth (`16UC1`, `32FC1`) shown with a turbo colormap. Compressed images: JPEG, PNG and `compressedDepth`.
+- The info line shows the source size and encoding, the topic rate, the displayed frame rate and, with kitty graphics, the bandwidth to the terminal.
+- Images use the kitty graphics protocol when the terminal answers its query and fall back to colored half blocks otherwise (including inside tmux). Set `ROS2_TUI_GRAPHICS=kitty` or `ROS2_TUI_GRAPHICS=halfblocks` to override the detection.
+- Over SSH, frames are downscaled to at most 960x720 pixels and scaled up by the terminal, keeping bandwidth to a few MB/s at 10 fps. Lower the frame rate with `-` on slow links.
+- Images are received by a small `rclpy` helper embedded in the binary, so no message packages are compiled in; it matches the publishers' reliability like `ros2 topic hz` does.
+
+### Point Cloud Viewer
+- Three views, cycled with `Tab`: **top** (orthographic bird's eye view, x up), **orbit** (perspective from behind the sensor) and **side**. The camera starts fitted to the cloud.
+- `←→↑↓`/`hjkl` orbit, `wasd` pan, the mouse wheel zooms, `r` resets the camera, `g` toggles the ground grid.
+- `c` cycles the coloring: `rgb` (packed `rgb`/`rgba` fields), intensity (`intensity`, `reflectivity` or `i`), height and distance. Value ranges span the 2nd to 98th percentile so outliers do not wash out the colors.
+- Two info lines show the point count and layout, the share of valid points, the frame, the fields, the bounding box, the color range and the grid spacing.
+- Points are shown in the cloud's own frame. Clouds over 200,000 points are sampled evenly for display; the counts refer to the whole cloud.
+- Without kitty graphics, clouds are drawn with braille dots (2x4 per cell).
+- `LaserScan` topics open in the same viewer: returns become points in the scan plane, colored by intensity or distance, and the info lines show the angle span and step, the range limits and the measured ranges. Ranges outside the limits count as invalid.
+- The mouse is captured only while this viewer is open, for the wheel; text selection works everywhere else.
+
+### Diagnostics Viewer
+- Statuses from all partial `DiagnosticArray`s are merged by name into one table, sorted worst first (STALE, ERROR, WARN, OK), with the hardware ID and time since the last update.
+- A status not updated for 5 seconds turns STALE, which catches drivers that died without saying so.
+- `↑`/`↓` or `j`/`k` select a status and show its key/value pairs below the table; `f` shows only problems.
+- Diagnostics are never rate limited, so no driver's array is dropped.
 
 ### Architecture Highlights
 - Background workers keep `ros2 topic list -v`, `ros2 topic hz`, and `ros2 topic delay` streaming without blocking the UI

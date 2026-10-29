@@ -1,12 +1,38 @@
+use super::cloud_render::{self, CameraPreset, CloudCamera, ColorMode, RenderOptions};
+use super::diagnostics::{self, DiagnosticsTable};
+use super::image::{self, DecodedImage};
+use super::pointcloud::{self, PointCloud};
 use super::ros;
 use super::ros::MeasurementStatus;
-use super::watcher::{TopicDetailWatcherHandle, TopicMessage, TopicWatcherHandle, WatchMessage};
+use super::watcher::{
+    FrameContent, TopicDetailWatcherHandle, TopicMessage, TopicWatcherHandle, ViewFrame,
+    ViewTarget, WatchMessage,
+};
+use crate::common::graphics::{GraphicsProtocol, KittyPlacement, TerminalGraphics};
 use crate::common::{TopicTree, TopicTreeItem};
+use ::image::RgbImage;
 use crossbeam::channel::{Receiver, Sender};
-use std::collections::HashMap;
-use std::time::Duration;
+use ratatui::layout::Rect;
+use std::cell::{Cell, Ref, RefCell};
+use std::collections::{HashMap, VecDeque};
+use std::io::{self, Write};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 pub const CHARTS_MAX_DATA_POINTS: usize = 100;
+
+/// Selectable viewer frame rate limits.
+pub const VIEW_FPS_STEPS: [u32; 6] = [1, 2, 5, 10, 15, 30];
+const DEFAULT_VIEW_FPS: u32 = 10;
+/// Rate limit for diagnostics, high enough to never drop a message: every
+/// driver publishes its own partial array, and each one matters.
+const UNTHROTTLED_FPS: u32 = 1000;
+/// Span over which the viewer measures rates.
+const VIEW_RATE_WINDOW: Duration = Duration::from_secs(2);
+/// Point cloud orbit step per arrow key press.
+const ORBIT_STEP: f32 = 2.5 * std::f32::consts::PI / 180.0;
+/// Zoom per scroll wheel event; trackpads send many small ones.
+const WHEEL_ZOOM_STEP: f32 = 1.1;
 
 #[derive(PartialEq, Debug)]
 pub enum AppMode {
@@ -14,12 +40,199 @@ pub enum AppMode {
     TopicDetail,
     Search,
     Help,
+    TopicView,
 }
 
 #[derive(PartialEq, Debug)]
 pub enum DetailPaneFocus {
     Info,
     Echo,
+}
+
+/// Whether `v` can open a viewer for messages of `msg_type`.
+pub fn has_viewer(msg_type: &str) -> bool {
+    image::is_image_type(msg_type)
+        || pointcloud::is_pointcloud_type(msg_type)
+        || pointcloud::is_laserscan_type(msg_type)
+        || diagnostics::is_diagnostics_type(msg_type)
+}
+
+/// What a topic view shows; `None` until the first message arrives.
+pub enum ViewContent {
+    Image(Option<DecodedImage>),
+    Cloud(Box<CloudView>),
+    Diagnostics(DiagnosticsView),
+}
+
+/// Diagnostics viewer state: statuses merged from all arrays received.
+#[derive(Default)]
+pub struct DiagnosticsView {
+    pub table: DiagnosticsTable,
+    /// Row selected in the status table, clamped when drawn.
+    pub selected: usize,
+    pub problems_only: bool,
+}
+
+/// Point cloud viewer state: the latest cloud and how it is looked at.
+pub struct CloudView {
+    pub cloud: Option<PointCloud>,
+    pub camera: CloudCamera,
+    pub color: ColorMode,
+    pub grid: bool,
+    /// View radius fitted to the first cloud, restored by a reset.
+    fitted_radius: Option<f32>,
+    rendered: RefCell<Option<RenderedCloud>>,
+}
+
+/// A rendered cloud and what it was rendered from, to skip re-rendering
+/// while nothing changes.
+pub struct RenderedCloud {
+    pub image: RgbImage,
+    /// Distinguishes renders, like `TopicView::frame_seq` frames.
+    pub seq: u64,
+    key: RenderKey,
+}
+
+#[derive(PartialEq)]
+struct RenderKey {
+    frame_seq: u64,
+    camera: CloudCamera,
+    color: ColorMode,
+    grid: bool,
+    size: (u32, u32),
+}
+
+impl CloudView {
+    fn new() -> Self {
+        Self {
+            cloud: None,
+            camera: CloudCamera::new(CameraPreset::Top, 10.0),
+            color: ColorMode::Height,
+            grid: true,
+            fitted_radius: None,
+            rendered: RefCell::new(None),
+        }
+    }
+
+    fn set_cloud(&mut self, cloud: PointCloud) {
+        if self.fitted_radius.is_none() && !cloud.points.is_empty() {
+            let radius = cloud_render::fit_radius(&cloud);
+            self.fitted_radius = Some(radius);
+            self.camera = CloudCamera::new(self.camera.preset, radius);
+            self.color = ColorMode::available(&cloud)[0];
+        }
+        self.cloud = Some(cloud);
+    }
+
+    fn reset_camera(&mut self, preset: CameraPreset) {
+        self.camera = CloudCamera::new(preset, self.fitted_radius.unwrap_or(10.0));
+    }
+
+    fn cycle_color(&mut self) {
+        if let Some(cloud) = &self.cloud {
+            let modes = ColorMode::available(cloud);
+            let next = modes
+                .iter()
+                .position(|m| *m == self.color)
+                .map_or(0, |i| (i + 1) % modes.len());
+            self.color = modes[next];
+        }
+    }
+
+    /// The cloud rendered at `width` x `height`, re-rendered only when the
+    /// cloud, the camera or the size changed since the last call.
+    pub fn render(
+        &self,
+        frame_seq: u64,
+        width: u32,
+        height: u32,
+        pixel_aspect: f32,
+    ) -> Option<Ref<'_, RenderedCloud>> {
+        let cloud = self.cloud.as_ref()?;
+        let key = RenderKey {
+            frame_seq,
+            camera: self.camera,
+            color: self.color,
+            grid: self.grid,
+            size: (width, height),
+        };
+        let stale = self.rendered.borrow().as_ref().is_none_or(|r| r.key != key);
+        if stale {
+            let options = RenderOptions {
+                camera: self.camera,
+                color: self.color,
+                grid: self.grid,
+                width,
+                height,
+                pixel_aspect,
+            };
+            let seq = self.rendered.borrow().as_ref().map_or(0, |r| r.seq + 1);
+            *self.rendered.borrow_mut() = Some(RenderedCloud {
+                image: cloud_render::render(cloud, &options),
+                seq,
+                key,
+            });
+        }
+        Ref::filter_map(self.rendered.borrow(), |r| r.as_ref()).ok()
+    }
+}
+
+/// State of the viewer for one topic.
+pub struct TopicView {
+    pub topic_name: String,
+    pub msg_type: String,
+    pub content: ViewContent,
+    /// Incremented for every new message, to tell when to redraw.
+    pub frame_seq: u64,
+    pub error: Option<String>,
+    pub max_fps: u32,
+    pub paused: bool,
+    /// Rate of the topic itself, from the helper's message counter.
+    pub topic_hz: Option<f64>,
+    /// Rate at which frames reach the display.
+    pub display_fps: Option<f64>,
+    pub last_frame_at: Option<Instant>,
+    /// Cells the image was laid out in by the last draw.
+    pub placement: Cell<Option<Rect>>,
+    pub target: Arc<ViewTarget>,
+    /// (messages received by the helper, arrival time) of recent frames.
+    rate_samples: VecDeque<(u32, Instant)>,
+    return_mode: AppMode,
+}
+
+impl TopicView {
+    fn on_frame(&mut self, frame: ViewFrame) {
+        let now = Instant::now();
+        // Rates over a window rather than averaged per-frame rates, which
+        // overstate the rate whenever frame intervals jitter.
+        self.rate_samples.push_back((frame.received_count, now));
+        while self.rate_samples.len() > 2
+            && now.duration_since(self.rate_samples[0].1) > VIEW_RATE_WINDOW
+        {
+            self.rate_samples.pop_front();
+        }
+        if let (Some(&(first_count, first_at)), Some(&(last_count, last_at))) =
+            (self.rate_samples.front(), self.rate_samples.back())
+        {
+            let span = last_at.duration_since(first_at).as_secs_f64();
+            if span > 0.0 {
+                let received = last_count.wrapping_sub(first_count) as f64;
+                self.topic_hz = Some(received / span);
+                self.display_fps = Some((self.rate_samples.len() - 1) as f64 / span);
+            }
+        }
+        self.last_frame_at = Some(now);
+        match (&mut self.content, frame.content) {
+            (ViewContent::Image(image), FrameContent::Image(new)) => *image = Some(new),
+            (ViewContent::Cloud(view), FrameContent::Cloud(cloud)) => view.set_cloud(cloud),
+            (ViewContent::Diagnostics(view), FrameContent::Diagnostics(statuses)) => {
+                view.table.update(statuses, now)
+            }
+            _ => return,
+        }
+        self.frame_seq += 1;
+        self.error = None;
+    }
 }
 
 pub struct App {
@@ -50,6 +263,12 @@ pub struct App {
 
     pub expansion_state: HashMap<String, bool>,
     pub use_sim_time: bool,
+
+    pub view: Option<TopicView>,
+    pub graphics: TerminalGraphics,
+    kitty: KittyPlacement,
+    /// Redraw the kitty image even if unchanged, e.g. after a resize cleared it.
+    force_graphics_redraw: bool,
 
     message_receiver: Receiver<TopicMessage>,
     watch_sender: Sender<WatchMessage>,
@@ -89,6 +308,10 @@ impl App {
             last_animation_update: std::time::Instant::now(),
             expansion_state: HashMap::new(),
             use_sim_time: false,
+            view: None,
+            graphics: TerminalGraphics::default(),
+            kitty: KittyPlacement::default(),
+            force_graphics_redraw: false,
             message_receiver: topic_receiver,
             watch_sender,
             topic_watcher,
@@ -243,6 +466,23 @@ impl App {
                 // Keep scroll at top by default - don't auto-scroll when new messages arrive
                 // User can manually scroll down if needed
             }
+            TopicMessage::ViewFrame(frame) => {
+                if let Some(view) = self.view.as_mut() {
+                    if view.topic_name == frame.topic_name && !view.paused {
+                        view.on_frame(*frame);
+                    }
+                }
+            }
+            TopicMessage::ViewError {
+                topic_name,
+                message,
+            } => {
+                if let Some(view) = self.view.as_mut() {
+                    if view.topic_name == topic_name {
+                        view.error = Some(message);
+                    }
+                }
+            }
             TopicMessage::Error(error) => {
                 self.error_message = Some(error);
             }
@@ -314,7 +554,19 @@ impl App {
     }
 
     pub fn on_key(&mut self, c: char) {
-        if self.mode == AppMode::Search {
+        if self.mode == AppMode::TopicView {
+            match c {
+                'q' => self.close_view(),
+                'p' => {
+                    if let Some(view) = self.view.as_mut() {
+                        view.paused = !view.paused;
+                    }
+                }
+                '+' | '=' => self.step_view_fps(1),
+                '-' => self.step_view_fps(-1),
+                c => self.on_view_key(c),
+            }
+        } else if self.mode == AppMode::Search {
             self.search_text.push(c);
         } else {
             match c {
@@ -330,6 +582,7 @@ impl App {
                     }
                 }
                 'd' => self.enter_detail_view(),
+                'v' => self.open_view(),
                 'r' => self.refresh(),
                 's' => self.toggle_sim_time(),
                 '?' => self.mode = AppMode::Help,
@@ -382,6 +635,11 @@ impl App {
     }
 
     pub fn on_tab(&mut self) {
+        if let Some(cloud) = self.cloud_view_mut() {
+            let preset = cloud.camera.preset.next();
+            cloud.reset_camera(preset);
+            return;
+        }
         if self.mode == AppMode::TopicDetail {
             self.detail_focus = match self.detail_focus {
                 DetailPaneFocus::Info => DetailPaneFocus::Echo,
@@ -402,6 +660,10 @@ impl App {
     }
 
     pub fn on_left(&mut self) {
+        if let Some(cloud) = self.cloud_view_mut() {
+            cloud.camera.orbit(-ORBIT_STEP, 0.0);
+            return;
+        }
         if self.mode == AppMode::TopicDetail {
             // No action for left/right in detail view with combined panes
         } else if let Some(item) = self.get_selected_item() {
@@ -413,6 +675,10 @@ impl App {
     }
 
     pub fn on_right(&mut self) {
+        if let Some(cloud) = self.cloud_view_mut() {
+            cloud.camera.orbit(ORBIT_STEP, 0.0);
+            return;
+        }
         if self.mode == AppMode::TopicDetail {
             // No action for left/right in detail view with combined panes
         } else if let Some(item) = self.get_selected_item() {
@@ -425,6 +691,7 @@ impl App {
 
     pub fn on_escape(&mut self) {
         match self.mode {
+            AppMode::TopicView => self.close_view(),
             AppMode::Search | AppMode::Help | AppMode::TopicDetail => {
                 if self.is_echoing {
                     self.is_echoing = false;
@@ -460,6 +727,219 @@ impl App {
                 self.mode = AppMode::TopicDetail;
             }
         }
+    }
+
+    /// Open the image viewer on the selected topic, from the topic list or
+    /// the detail view.
+    pub fn open_view(&mut self) {
+        let topic_name = match self.mode {
+            AppMode::TopicList => self
+                .get_selected_item()
+                .and_then(|item| item.get_topic_info())
+                .map(|topic| topic.name.clone()),
+            AppMode::TopicDetail => self.selected_topic_name.clone(),
+            _ => None,
+        };
+        let Some(topic) = topic_name.and_then(|name| self.topic_map.get(&name)) else {
+            return;
+        };
+        if !has_viewer(&topic.msg_type) {
+            self.error_message = Some(format!(
+                "No viewer for {} (supported: images, point clouds, laser scans, diagnostics)",
+                topic.msg_type
+            ));
+            return;
+        }
+
+        let target = Arc::new(ViewTarget::default());
+        let view = TopicView {
+            topic_name: topic.name.clone(),
+            msg_type: topic.msg_type.clone(),
+            content: if pointcloud::is_pointcloud_type(&topic.msg_type)
+                || pointcloud::is_laserscan_type(&topic.msg_type)
+            {
+                ViewContent::Cloud(Box::new(CloudView::new()))
+            } else if diagnostics::is_diagnostics_type(&topic.msg_type) {
+                ViewContent::Diagnostics(DiagnosticsView::default())
+            } else {
+                ViewContent::Image(None)
+            },
+            frame_seq: 0,
+            error: None,
+            max_fps: if diagnostics::is_diagnostics_type(&topic.msg_type) {
+                UNTHROTTLED_FPS
+            } else {
+                DEFAULT_VIEW_FPS
+            },
+            paused: false,
+            topic_hz: None,
+            display_fps: None,
+            last_frame_at: None,
+            placement: Cell::new(None),
+            target: target.clone(),
+            rate_samples: VecDeque::new(),
+            return_mode: std::mem::replace(&mut self.mode, AppMode::TopicView),
+        };
+        let _ = self.watch_sender.send(WatchMessage::StartViewStream {
+            topic_name: view.topic_name.clone(),
+            msg_type: view.msg_type.clone(),
+            max_fps: view.max_fps,
+            target,
+        });
+        self.view = Some(view);
+    }
+
+    fn close_view(&mut self) {
+        if let Some(view) = self.view.take() {
+            let _ = self.watch_sender.send(WatchMessage::StopViewStream);
+            self.mode = view.return_mode;
+        }
+    }
+
+    fn cloud_view(&self) -> Option<&CloudView> {
+        if self.mode != AppMode::TopicView {
+            return None;
+        }
+        match self.view.as_ref().map(|v| &v.content) {
+            Some(ViewContent::Cloud(cloud)) => Some(cloud),
+            _ => None,
+        }
+    }
+
+    /// Whether the main loop should capture the mouse: only for wheel zoom in
+    /// the point cloud view, so text selection works everywhere else.
+    pub fn wants_mouse(&self) -> bool {
+        self.cloud_view().is_some()
+    }
+
+    /// Scroll wheel: zoom the point cloud view.
+    pub fn on_scroll(&mut self, up: bool) {
+        if let Some(cloud) = self.cloud_view_mut() {
+            let factor = if up {
+                1.0 / WHEEL_ZOOM_STEP
+            } else {
+                WHEEL_ZOOM_STEP
+            };
+            cloud.camera.zoom(factor);
+        }
+    }
+
+    fn cloud_view_mut(&mut self) -> Option<&mut CloudView> {
+        if self.mode != AppMode::TopicView {
+            return None;
+        }
+        match self.view.as_mut().map(|v| &mut v.content) {
+            Some(ViewContent::Cloud(cloud)) => Some(&mut **cloud),
+            _ => None,
+        }
+    }
+
+    fn diagnostics_view_mut(&mut self) -> Option<&mut DiagnosticsView> {
+        if self.mode != AppMode::TopicView {
+            return None;
+        }
+        match self.view.as_mut().map(|v| &mut v.content) {
+            Some(ViewContent::Diagnostics(diag)) => Some(diag),
+            _ => None,
+        }
+    }
+
+    /// Point cloud keys: pan, color, grid and camera reset. Diagnostics:
+    /// `f` toggles showing only problems.
+    fn on_view_key(&mut self, c: char) {
+        if let Some(diag) = self.diagnostics_view_mut() {
+            if c == 'f' {
+                diag.problems_only = !diag.problems_only;
+                diag.selected = 0;
+            }
+            return;
+        }
+        let Some(cloud) = self.cloud_view_mut() else {
+            return;
+        };
+        match c {
+            'w' => cloud.camera.pan(1.0, 0.0),
+            's' => cloud.camera.pan(-1.0, 0.0),
+            'a' => cloud.camera.pan(0.0, -1.0),
+            'd' => cloud.camera.pan(0.0, 1.0),
+            'c' => cloud.cycle_color(),
+            'g' => cloud.grid = !cloud.grid,
+            'r' => cloud.reset_camera(cloud.camera.preset),
+            _ => {}
+        }
+    }
+
+    fn step_view_fps(&mut self, direction: isize) {
+        let Some(view) = self.view.as_mut() else {
+            return;
+        };
+        if matches!(view.content, ViewContent::Diagnostics(_)) {
+            return;
+        }
+        let current = VIEW_FPS_STEPS
+            .iter()
+            .position(|&fps| fps >= view.max_fps)
+            .unwrap_or(VIEW_FPS_STEPS.len() - 1);
+        let next = current
+            .saturating_add_signed(direction)
+            .min(VIEW_FPS_STEPS.len() - 1);
+        view.max_fps = VIEW_FPS_STEPS[next];
+        let _ = self
+            .watch_sender
+            .send(WatchMessage::SetViewFps(view.max_fps));
+    }
+
+    /// Main loop polling interval: short while images stream, so frames are
+    /// not held back waiting for input.
+    pub fn poll_interval(&self) -> Duration {
+        if self.mode == AppMode::TopicView {
+            Duration::from_millis(10)
+        } else {
+            Duration::from_millis(50)
+        }
+    }
+
+    pub fn on_resize(&mut self) {
+        self.force_graphics_redraw = true;
+    }
+
+    /// Bytes per second of image data sent to the terminal.
+    pub fn graphics_bytes_per_second(&self) -> usize {
+        self.kitty.bytes_per_second()
+    }
+
+    /// Write kitty graphics after a draw: show the current frame where the
+    /// UI laid it out, or remove the image once the viewer is closed.
+    pub fn sync_graphics(&mut self, out: &mut impl Write) -> io::Result<()> {
+        if self.graphics.protocol != GraphicsProtocol::Kitty {
+            return Ok(());
+        }
+        let force = std::mem::take(&mut self.force_graphics_redraw);
+        let view = self
+            .view
+            .as_ref()
+            .filter(|_| self.mode == AppMode::TopicView);
+        let Some((view, rect)) = view.and_then(|v| Some((v, v.placement.get()?))) else {
+            return self.kitty.clear(out);
+        };
+        match &view.content {
+            ViewContent::Image(Some(frame)) => {
+                self.kitty
+                    .show(out, &frame.rgb, view.frame_seq, rect, force)
+            }
+            ViewContent::Cloud(cloud) => match cloud.rendered.borrow().as_ref() {
+                Some(rendered) => self
+                    .kitty
+                    .show(out, &rendered.image, rendered.seq, rect, force),
+                None => self.kitty.clear(out),
+            },
+            ViewContent::Image(None) | ViewContent::Diagnostics(_) => self.kitty.clear(out),
+        }
+    }
+
+    /// Remove any image from the terminal, e.g. before quitting.
+    pub fn clear_graphics(&mut self, out: &mut impl Write) -> io::Result<()> {
+        self.kitty.clear(out)
     }
 
     fn toggle_group_expansion(&mut self, group_path: &str) {
@@ -506,6 +986,14 @@ impl App {
     }
 
     pub fn on_up(&mut self) {
+        if self.mode == AppMode::TopicView {
+            if let Some(cloud) = self.cloud_view_mut() {
+                cloud.camera.orbit(0.0, ORBIT_STEP);
+            } else if let Some(diag) = self.diagnostics_view_mut() {
+                diag.selected = diag.selected.saturating_sub(1);
+            }
+            return;
+        }
         if self.mode == AppMode::TopicDetail {
             if self.detail_focus == DetailPaneFocus::Echo {
                 self.echo_scroll_offset = self.echo_scroll_offset.saturating_sub(1);
@@ -516,6 +1004,14 @@ impl App {
     }
 
     pub fn on_down(&mut self) {
+        if self.mode == AppMode::TopicView {
+            if let Some(cloud) = self.cloud_view_mut() {
+                cloud.camera.orbit(0.0, -ORBIT_STEP);
+            } else if let Some(diag) = self.diagnostics_view_mut() {
+                diag.selected += 1;
+            }
+            return;
+        }
         if self.mode == AppMode::TopicDetail {
             if self.detail_focus == DetailPaneFocus::Echo {
                 // Constrain scroll to prevent excess whitespace

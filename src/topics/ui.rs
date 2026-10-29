@@ -10,9 +10,16 @@ use ratatui::{
     Frame,
 };
 
-use super::app::{App, AppMode, DetailPaneFocus, CHARTS_MAX_DATA_POINTS};
+use super::app::{
+    has_viewer, App, AppMode, CloudView, DetailPaneFocus, DiagnosticsView, TopicView, ViewContent,
+    CHARTS_MAX_DATA_POINTS,
+};
+use super::cloud_render::{grid_step, ColorMode};
+use super::diagnostics::Level;
+use super::pointcloud::PointCloud;
 use super::ros;
 use super::ros::MeasurementStatus;
+use crate::common::graphics::{Braille, GraphicsProtocol, Halfblocks};
 use crate::common::{TopicTree, TopicTreeItem};
 
 pub fn ui(f: &mut Frame, app: &App) {
@@ -21,6 +28,7 @@ pub fn ui(f: &mut Frame, app: &App) {
         AppMode::TopicDetail => render_topic_detail(f, app),
         AppMode::Search => render_search_mode(f, app),
         AppMode::Help => render_help(f),
+        AppMode::TopicView => render_view(f, app),
     }
 }
 
@@ -56,9 +64,39 @@ fn render_help(f: &mut Frame) {
         )),
         Line::from("    <Enter>     - Toggle watch on topic / expand group"),
         Line::from("    d           - View details for selected topic"),
+        Line::from(
+            "    v           - View topic marked ◉ (images, point clouds, scans, diagnostics)",
+        ),
         Line::from("    c           - Toggle collapse/uncollapse all groups"),
         Line::from("    s           - Toggle sim time for delay metrics"),
         Line::from("    F4          - Enter search/filter mode"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Topic Viewer",
+            Style::default().add_modifier(Modifier::UNDERLINED),
+        )),
+        Line::from("    + / -       - Raise / lower the frame rate limit"),
+        Line::from("    p           - Pause / resume"),
+        Line::from("    q / <Esc>   - Back"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Point Cloud Viewer",
+            Style::default().add_modifier(Modifier::UNDERLINED),
+        )),
+        Line::from("    ←→↑↓ / hjkl - Orbit the camera"),
+        Line::from("    w a s d     - Pan"),
+        Line::from("    mouse wheel - Zoom in / out"),
+        Line::from("    <Tab>       - Next view: top, orbit, side"),
+        Line::from("    c           - Next coloring: rgb, intensity, height, distance"),
+        Line::from("    g           - Toggle the ground grid"),
+        Line::from("    r           - Reset the camera"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Diagnostics Viewer",
+            Style::default().add_modifier(Modifier::UNDERLINED),
+        )),
+        Line::from("    ↑↓ / jk     - Select a status to see its values"),
+        Line::from("    f           - Show only problems (WARN, ERROR, STALE)"),
         Line::from(""),
         Line::from(Span::styled(
             "  General",
@@ -108,8 +146,54 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             format!("Error: {}", error),
             Style::default().fg(Color::Red),
         )]
+    } else if app.mode == AppMode::TopicView {
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let mut keys = vec![];
+        let content = app.view.as_ref().map(|v| &v.content);
+        let diagnostics = matches!(content, Some(ViewContent::Diagnostics(_)));
+        if diagnostics {
+            keys.extend([
+                Span::styled("↑↓/jk", bold),
+                Span::raw(": Select | "),
+                Span::styled("f", bold),
+                Span::raw(": Problems Only | "),
+            ]);
+        }
+        if matches!(content, Some(ViewContent::Cloud(_))) {
+            keys.extend([
+                Span::styled("←→↑↓/hjkl", bold),
+                Span::raw(": Orbit | "),
+                Span::styled("wasd", bold),
+                Span::raw(": Pan | "),
+                Span::styled("wheel", bold),
+                Span::raw(": Zoom | "),
+                Span::styled("Tab", bold),
+                Span::raw(": View | "),
+                Span::styled("c", bold),
+                Span::raw(": Color | "),
+                Span::styled("g", bold),
+                Span::raw(": Grid | "),
+                Span::styled("r", bold),
+                Span::raw(": Reset | "),
+            ]);
+        }
+        if !diagnostics {
+            keys.extend([
+                Span::styled("+/-", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(": Max FPS | "),
+            ]);
+        }
+        keys.extend([
+            Span::styled("p", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(": Pause | "),
+            Span::styled("q/Esc", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(": Back"),
+        ]);
+        keys
     } else if app.mode == AppMode::TopicDetail {
         vec![
+            Span::styled("v", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(": View | "),
             Span::raw("↑↓/jk: Scroll | "),
             Span::styled("PgUp/PgDn", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(": Page | "),
@@ -131,6 +215,8 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::raw(": Watch/Expand | "),
             Span::styled("d", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(": Details | "),
+            Span::styled("v", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(": View | "),
             Span::styled("c", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(": Un/Collapse | "),
             Span::styled("F4", Style::default().add_modifier(Modifier::BOLD)),
@@ -164,6 +250,371 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     let status = Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::TOP));
     f.render_widget(status, area);
+}
+
+fn render_view(f: &mut Frame, app: &App) {
+    let Some(view) = app.view.as_ref() else {
+        return;
+    };
+    let main_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(3)])
+        .split(f.area());
+
+    let block = create_block(&view.topic_name).title(
+        Line::from(Span::styled(
+            format!(" {} ", app.graphics.protocol_name()),
+            Style::default().fg(Color::DarkGray),
+        ))
+        .right_aligned(),
+    );
+    let inner = block.inner(main_chunks[0]);
+    f.render_widget(block, main_chunks[0]);
+
+    let info = view_info_lines(app, view);
+    let inner_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(info.len() as u16), Constraint::Min(0)])
+        .split(inner);
+    f.render_widget(Paragraph::new(info), inner_chunks[0]);
+    let content_area = inner_chunks[1];
+
+    // Kitty images are drawn by `App::sync_graphics` after the frame, at the
+    // placement recorded here.
+    let kitty = app.graphics.protocol == GraphicsProtocol::Kitty;
+    let shown = match &view.content {
+        ViewContent::Image(frame) => {
+            let (width, height) = app.graphics.target_pixels(content_area);
+            view.target.set(width, height);
+            frame.as_ref().map(|frame| {
+                let (width, height) = frame.rgb.dimensions();
+                if !kitty {
+                    f.render_widget(Halfblocks(&frame.rgb), content_area);
+                }
+                app.graphics.placement(content_area, width, height)
+            })
+        }
+        ViewContent::Cloud(cloud) => {
+            let (width, height, pixel_aspect) = app.graphics.cloud_pixels(content_area);
+            cloud
+                .render(view.frame_seq, width, height, pixel_aspect)
+                .map(|rendered| {
+                    if !kitty {
+                        f.render_widget(Braille(&rendered.image), content_area);
+                    }
+                    app.graphics.placement(content_area, width, height)
+                })
+        }
+        ViewContent::Diagnostics(diag) => {
+            if !diag.table.is_empty() {
+                render_diagnostics(f, diag, content_area);
+            }
+            None
+        }
+    };
+    view.placement.set(shown);
+
+    if !view_has_content(view) {
+        let text = match &view.error {
+            Some(error) => Span::styled(error.clone(), Style::default().fg(Color::Red)),
+            None => Span::styled(
+                format!("Waiting for messages on {} ...", view.topic_name),
+                Style::default().fg(Color::DarkGray),
+            ),
+        };
+        let message_area = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(50),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
+            .split(content_area)[1];
+        f.render_widget(
+            Paragraph::new(Line::from(text)).alignment(ratatui::layout::Alignment::Center),
+            message_area,
+        );
+    }
+
+    render_status_bar(f, app, main_chunks[1]);
+}
+
+fn view_has_content(view: &TopicView) -> bool {
+    match &view.content {
+        ViewContent::Image(frame) => frame.is_some(),
+        ViewContent::Cloud(cloud) => cloud.cloud.is_some(),
+        ViewContent::Diagnostics(diag) => !diag.table.is_empty(),
+    }
+}
+
+fn level_style(level: Level) -> Style {
+    let color = match level {
+        Level::Ok => Color::Green,
+        Level::Warn => Color::Yellow,
+        Level::Error => Color::Red,
+        Level::Stale => Color::DarkGray,
+    };
+    Style::default().fg(color).add_modifier(Modifier::BOLD)
+}
+
+/// Status table, worst first, above the details of the selected status.
+fn render_diagnostics(f: &mut Frame, diag: &DiagnosticsView, area: ratatui::layout::Rect) {
+    let now = std::time::Instant::now();
+    let entries = diag.table.sorted(now, diag.problems_only);
+    let selected = diag.selected.min(entries.len().saturating_sub(1));
+    let details_height = entries
+        .get(selected)
+        .map_or(0, |e| e.status.values.len() as u16 + 4)
+        .min(area.height / 2);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(details_height)])
+        .split(area);
+
+    let header = Row::new(["Level", "Name", "Message", "Hardware ID", "Age"]).style(
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
+    let rows = entries.iter().map(|entry| {
+        let level = entry.level(now);
+        Row::new(vec![
+            Cell::from(Span::styled(level.name(), level_style(level))),
+            Cell::from(entry.status.name.clone()),
+            Cell::from(entry.status.message.clone()),
+            Cell::from(entry.status.hardware_id.clone()),
+            Cell::from(format!(
+                "{:.1}s",
+                now.duration_since(entry.updated).as_secs_f64()
+            )),
+        ])
+    });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(6),
+            Constraint::Percentage(35),
+            Constraint::Percentage(40),
+            Constraint::Percentage(15),
+            Constraint::Length(7),
+        ],
+    )
+    .header(header)
+    .row_highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
+    .highlight_symbol(">> ");
+    let mut state = ratatui::widgets::TableState::default();
+    state.select((!entries.is_empty()).then_some(selected));
+    f.render_stateful_widget(table, chunks[0], &mut state);
+
+    if let Some(entry) = entries.get(selected) {
+        let label = Style::default().fg(Color::Cyan);
+        let mut lines = vec![Line::from(vec![
+            Span::styled("Message ", label),
+            Span::raw(entry.status.message.clone()),
+        ])];
+        lines.extend(entry.status.values.iter().map(|(key, value)| {
+            Line::from(vec![
+                Span::styled(format!("{}: ", key), label),
+                Span::raw(value.clone()),
+            ])
+        }));
+        let details = Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(create_block(&entry.status.name));
+        f.render_widget(details, chunks[1]);
+    }
+}
+
+/// Lines describing what is shown and the stream: one for images, two for
+/// point clouds, whose second line has the view and cloud statistics.
+fn view_info_lines<'a>(app: &App, view: &'a TopicView) -> Vec<Line<'a>> {
+    let label = Style::default().fg(Color::Cyan);
+    let mut spans = vec![];
+    let mut second = None;
+    match &view.content {
+        ViewContent::Image(Some(frame)) => {
+            let (width, height) = frame.rgb.dimensions();
+            spans.extend([
+                Span::styled("Source ", label),
+                Span::raw(format!(
+                    "{}x{} {}",
+                    frame.source_width, frame.source_height, frame.encoding
+                )),
+                Span::styled("  Shown ", label),
+                Span::raw(format!("{}x{}", width, height)),
+            ]);
+            if !frame.frame_id.is_empty() {
+                spans.push(Span::styled("  Frame ", label));
+                spans.push(Span::raw(frame.frame_id.clone()));
+            }
+        }
+        ViewContent::Cloud(cloud_view) if cloud_view.cloud.is_some() => {
+            let cloud = cloud_view.cloud.as_ref().unwrap();
+            let shape = if cloud.height > 1 {
+                format!("{}x{}", cloud.width, cloud.height)
+            } else {
+                "unordered".to_string()
+            };
+            if cloud.scan.is_some() {
+                spans.extend([
+                    Span::styled("Beams ", label),
+                    Span::raw(cloud.total_points.to_string()),
+                ]);
+            } else {
+                spans.extend([
+                    Span::styled("Points ", label),
+                    Span::raw(format!("{} ({})", cloud.total_points, shape)),
+                ]);
+            }
+            if cloud.sampled_points < cloud.total_points {
+                spans.push(Span::styled("  Shown ", label));
+                spans.push(Span::raw(format!(
+                    "every {}th",
+                    cloud.total_points / cloud.sampled_points.max(1)
+                )));
+            }
+            spans.extend([
+                Span::styled("  Valid ", label),
+                Span::raw(format!("{:.1}%", cloud.valid_ratio() * 100.0)),
+            ]);
+            if !cloud.frame_id.is_empty() {
+                spans.push(Span::styled("  Frame ", label));
+                spans.push(Span::raw(cloud.frame_id.clone()));
+            }
+            second = Some(cloud_stats_line(cloud_view, cloud));
+        }
+        ViewContent::Diagnostics(diag) if !diag.table.is_empty() => {
+            let counts = diag.table.counts(std::time::Instant::now());
+            spans.push(Span::styled("Statuses ", label));
+            for (level, count) in [Level::Ok, Level::Warn, Level::Error, Level::Stale]
+                .into_iter()
+                .zip(counts)
+            {
+                let style = if count > 0 {
+                    level_style(level)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                spans.push(Span::styled(format!("{} {}  ", count, level.name()), style));
+            }
+            if diag.problems_only {
+                spans.push(Span::styled(
+                    "(problems only)",
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+        }
+        _ => {
+            spans.push(Span::styled("Type ", label));
+            spans.push(Span::raw(view.msg_type.as_str()));
+        }
+    }
+
+    let rate = |hz: Option<f64>| hz.map_or("-".to_string(), |hz| format!("{:.1}", hz));
+    spans.extend([
+        Span::styled("  Topic ", label),
+        Span::raw(format!("{} Hz", rate(view.topic_hz))),
+    ]);
+    // Diagnostics are never throttled, so there is no display rate to show.
+    if !matches!(view.content, ViewContent::Diagnostics(_)) {
+        spans.extend([
+            Span::styled("  Display ", label),
+            Span::raw(format!("{} / {} fps", rate(view.display_fps), view.max_fps)),
+        ]);
+    }
+    let graphical = !matches!(view.content, ViewContent::Diagnostics(_));
+    if graphical && app.graphics.protocol == GraphicsProtocol::Kitty {
+        spans.push(Span::styled("  Link ", label));
+        spans.push(Span::raw(format!(
+            "{:.1} MB/s",
+            app.graphics_bytes_per_second() as f64 / 1e6
+        )));
+    }
+
+    let has_content = view_has_content(view);
+    if view.paused {
+        spans.push(Span::styled(
+            "  PAUSED",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else if let Some(error) = view.error.as_ref().filter(|_| has_content) {
+        spans.push(Span::styled(
+            format!("  {}", error),
+            Style::default().fg(Color::Red),
+        ));
+    } else if let Some(age) = view.last_frame_at.map(|at| at.elapsed()) {
+        if age.as_secs_f64() > 2.0 {
+            spans.push(Span::styled(
+                format!("  No message for {:.0}s", age.as_secs_f64()),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+    }
+    let mut lines = vec![Line::from(spans)];
+    lines.extend(second);
+    lines
+}
+
+/// View settings and cloud statistics: camera, coloring with its value
+/// range, grid spacing, fields and the bounding box.
+fn cloud_stats_line<'a>(view: &CloudView, cloud: &PointCloud) -> Line<'a> {
+    let label = Style::default().fg(Color::Cyan);
+    let mut spans = vec![
+        Span::styled("View ", label),
+        Span::raw(view.camera.preset.name()),
+        Span::styled("  Color ", label),
+        Span::raw(match view.color {
+            ColorMode::Intensity => cloud
+                .intensity_field
+                .clone()
+                .unwrap_or_else(|| "intensity".into()),
+            mode => mode.name().to_string(),
+        }),
+    ];
+    if let Some((lo, hi)) = view.color.range(cloud) {
+        spans.push(Span::raw(format!(" {:.1}..{:.1}", lo, hi)));
+    }
+    if view.grid {
+        spans.push(Span::styled("  Grid ", label));
+        spans.push(Span::raw(format!("{} m", grid_step(view.camera.radius))));
+    }
+    if let Some(scan) = &cloud.scan {
+        spans.extend([
+            Span::styled("  Angles ", label),
+            Span::raw(format!(
+                "{:.1}..{:.1}° step {:.2}°",
+                scan.angle_min.to_degrees(),
+                scan.angle_max.to_degrees(),
+                scan.angle_increment.to_degrees()
+            )),
+            Span::styled("  Limits ", label),
+            Span::raw(format!("{:.2}..{:.1} m", scan.range_min, scan.range_max)),
+        ]);
+        if let Some((lo, hi)) = scan.measured {
+            spans.push(Span::styled("  Measured ", label));
+            spans.push(Span::raw(format!("{:.2}..{:.2} m", lo, hi)));
+        }
+        return Line::from(spans);
+    }
+    spans.push(Span::styled("  Fields ", label));
+    spans.push(Span::raw(
+        cloud
+            .fields
+            .iter()
+            .map(|f| f.split(':').next().unwrap_or(f))
+            .collect::<Vec<_>>()
+            .join(" "),
+    ));
+    if let Some([x, y, z]) = cloud.bounds {
+        spans.push(Span::styled("  Bounds ", label));
+        spans.push(Span::raw(format!(
+            "x {:.1}..{:.1} y {:.1}..{:.1} z {:.1}..{:.1}",
+            x.0, x.1, y.0, y.1, z.0, z.1
+        )));
+    }
+    Line::from(spans)
 }
 
 fn render_topic_detail(f: &mut Frame, app: &App) {
@@ -615,6 +1066,7 @@ fn render_topic_table(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     let header_cells = [
         "W",
+        "V",
         "Topic / Group",
         "Type",
         "Pub",
@@ -636,6 +1088,7 @@ fn render_topic_table(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD);
                 Row::new(vec![
+                    Cell::from(""),
                     Cell::from(""),
                     Cell::from(item.get_display_name()),
                     Cell::from(""),
@@ -665,6 +1118,7 @@ fn render_topic_table(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
                 Row::new(vec![
                     Cell::from(watch_indicator),
+                    viewer_cell(&topic_info.msg_type),
                     Cell::from(item.get_display_name()),
                     Cell::from(topic_info.msg_type.clone()),
                     Cell::from(topic_info.publisher_count.to_string()),
@@ -676,6 +1130,7 @@ fn render_topic_table(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             } else {
                 // Topic not found in map - show placeholder row
                 Row::new(vec![
+                    Cell::from(""),
                     Cell::from(""),
                     Cell::from(item.get_display_name()),
                     Cell::from(""),
@@ -694,6 +1149,7 @@ fn render_topic_table(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         rows,
         &[
             Constraint::Length(2),
+            Constraint::Length(2),
             Constraint::Percentage(45),
             Constraint::Percentage(25),
             Constraint::Length(5),
@@ -710,6 +1166,15 @@ fn render_topic_table(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let mut state = ratatui::widgets::TableState::default();
     state.select(Some(app.selected_index.saturating_sub(scroll_offset)));
     f.render_stateful_widget(table, area, &mut state);
+}
+
+/// Marks topics that `v` can open in a viewer.
+fn viewer_cell(msg_type: &str) -> Cell<'static> {
+    if has_viewer(msg_type) {
+        Cell::from(Span::styled("◉", Style::default().fg(Color::Cyan)))
+    } else {
+        Cell::from("")
+    }
 }
 
 fn format_measurement(val: &Option<f64>, status: &MeasurementStatus, multiplier: f64) -> String {
@@ -813,6 +1278,7 @@ fn render_search_table(
 
     let header_cells = [
         "W",
+        "V",
         "Topic / Group",
         "Type",
         "Pub",
@@ -834,6 +1300,7 @@ fn render_search_table(
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD);
                 Row::new(vec![
+                    Cell::from(""),
                     Cell::from(""),
                     Cell::from(item.get_display_name()),
                     Cell::from(""),
@@ -863,6 +1330,7 @@ fn render_search_table(
 
                 Row::new(vec![
                     Cell::from(watch_indicator),
+                    viewer_cell(&topic_info.msg_type),
                     Cell::from(item.get_display_name()),
                     Cell::from(topic_info.msg_type.clone()),
                     Cell::from(topic_info.publisher_count.to_string()),
@@ -873,6 +1341,7 @@ fn render_search_table(
                 .style(style)
             } else {
                 Row::new(vec![
+                    Cell::from(""),
                     Cell::from(""),
                     Cell::from(item.get_display_name()),
                     Cell::from(""),
@@ -889,6 +1358,7 @@ fn render_search_table(
     let table = Table::new(
         rows,
         &[
+            Constraint::Length(2),
             Constraint::Length(2),
             Constraint::Percentage(45),
             Constraint::Percentage(25),

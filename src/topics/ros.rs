@@ -190,6 +190,37 @@ pub async fn start_topic_echo_stream(
     Ok(child)
 }
 
+/// Python helper that streams serialized image messages, see the script.
+const MESSAGE_STREAM_SCRIPT: &str = include_str!("message_stream.py");
+
+/// Start streaming `topic_name` as serialized messages of `msg_type`,
+/// throttled to `max_fps`. The script ships inside the binary and runs on the
+/// ROS2 Python, so no message types are compiled in.
+pub async fn start_message_stream(
+    topic_name: &str,
+    msg_type: &str,
+    max_fps: u32,
+) -> Result<tokio::process::Child, TopicError> {
+    crate::debug_log(&format!(
+        "Starting image bridge for topic: '{}'",
+        topic_name
+    ));
+
+    let child = Command::new("python3")
+        .arg("-c")
+        .arg(MESSAGE_STREAM_SCRIPT)
+        .arg(topic_name)
+        .arg(msg_type)
+        .arg(max_fps.to_string())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+
+    Ok(child)
+}
+
 pub fn parse_topic_list_verbose(output: &str) -> Vec<TopicInfo> {
     use std::collections::HashMap;
 

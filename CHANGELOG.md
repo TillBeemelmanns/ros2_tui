@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Topics: image viewer for `sensor_msgs/msg/Image` and
+  `sensor_msgs/msg/CompressedImage` topics, opened with `v`. Renders with the
+  kitty graphics protocol (Ghostty, kitty, WezTerm), including over SSH, and
+  with colored half blocks elsewhere. Supports color, mono, YUV422, Bayer and
+  depth encodings plus JPEG, PNG and `compressedDepth`, with an adjustable
+  frame rate limit and topic/display rate readouts.
+- Topics: point cloud viewer for `sensor_msgs/msg/PointCloud2` topics, also
+  opened with `v`: top-down, orbiting perspective and side views with orbit,
+  pan and zoom keys, coloring by rgb, intensity, height or distance, a ground
+  grid, and statistics (point count, valid share, fields, bounds). Braille
+  dots replace kitty graphics where the terminal lacks them.
+- Topics: `LaserScan` topics open in the point cloud viewer, with the scan's
+  angle span, range limits and measured ranges as statistics.
+- Topics: diagnostics viewer for `diagnostic_msgs/msg/DiagnosticArray` topics:
+  statuses merged from all publishers into one table sorted by severity, with
+  per-status details, a problems-only filter and stale detection after 5 s.
+- Topics: the mouse wheel zooms the point cloud viewer; the mouse is captured
+  only while it is open.
+- Topics: a `◉` in the new `V` column marks topics that can be viewed.
+- Test fixtures: an `image_publisher` node publishing an animated camera image
+  (raw and JPEG) and a depth image, a `lidar_publisher` node simulating a
+  32-beam lidar, a 2D laser scanner and a colored cloud, and a
+  `diagnostics_publisher` node simulating several drivers' diagnostics, all
+  started by `dummy_publishers.launch.py`.
+
+### Fixed
+- Test fixtures: `multi_publisher` now publishes real JPEG camera images,
+  point clouds with x/y/z fields and valid `32FC1` depth images instead of
+  placeholder bytes, and builds the depth image with numpy instead of a
+  per-pixel Python loop that loaded the CPU.
+
 ## [0.1.10] - 2026-10-29
 
 Re-release of 0.1.9, which was tagged before its version bump and therefore
