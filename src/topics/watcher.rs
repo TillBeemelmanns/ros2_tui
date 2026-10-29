@@ -1,5 +1,8 @@
 use super::diagnostics::{self, DiagnosticStatus};
 use super::image::{self, DecodedImage};
+use super::imu::{self, ImuSample};
+use super::navsat::{self, NavSatFix};
+use super::occupancy;
 use super::pointcloud::{self, PointCloud};
 use super::ros::{self, MeasurementStatus, TopicInfo};
 use crossbeam::channel::{Receiver, Sender};
@@ -63,6 +66,8 @@ pub enum FrameContent {
     Image(DecodedImage),
     Cloud(PointCloud),
     Diagnostics(Vec<DiagnosticStatus>),
+    Gnss(NavSatFix),
+    Imu(ImuSample),
 }
 
 /// Decode a serialized message of `msg_type` for display.
@@ -74,6 +79,16 @@ fn decode_frame(
     if pointcloud::is_pointcloud_type(msg_type) {
         pointcloud::decode_message(payload, MAX_CLOUD_POINTS)
             .map(FrameContent::Cloud)
+            .map_err(|e| e.to_string())
+    } else if occupancy::is_occupancy_grid_type(msg_type) {
+        occupancy::decode_message(payload, target.0, target.1).map(FrameContent::Image)
+    } else if navsat::is_navsatfix_type(msg_type) {
+        navsat::decode_message(payload)
+            .map(FrameContent::Gnss)
+            .map_err(|e| e.to_string())
+    } else if imu::is_imu_type(msg_type) {
+        imu::decode_message(payload)
+            .map(FrameContent::Imu)
             .map_err(|e| e.to_string())
     } else if diagnostics::is_diagnostics_type(msg_type) {
         diagnostics::decode_message(payload)

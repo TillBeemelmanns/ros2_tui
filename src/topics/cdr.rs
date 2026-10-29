@@ -24,6 +24,8 @@ pub struct CdrReader<'a> {
     body: &'a [u8],
     pos: usize,
     little_endian: bool,
+    /// XCDR2 aligns 8-byte values to 4 bytes, XCDR1 to 8.
+    xcdr2: bool,
 }
 
 impl<'a> CdrReader<'a> {
@@ -32,17 +34,20 @@ impl<'a> CdrReader<'a> {
             return Err(CdrError::Truncated);
         }
         let kind = u16::from_be_bytes([buf[0], buf[1]]);
-        // XCDR1 and plain XCDR2 share one layout for the decoded messages:
-        // they have no 8-byte members, the only place the alignment differs.
-        let little_endian = match kind {
-            0x0000 | 0x0006 => false,
-            0x0001 | 0x0007 => true,
+        // ROS messages are final structs: plain XCDR2 differs from XCDR1
+        // only in the alignment of 8-byte values.
+        let (little_endian, xcdr2) = match kind {
+            0x0000 => (false, false),
+            0x0001 => (true, false),
+            0x0006 => (false, true),
+            0x0007 => (true, true),
             other => return Err(CdrError::UnsupportedEncapsulation(other)),
         };
         Ok(Self {
             body: &buf[4..],
             pos: 0,
             little_endian,
+            xcdr2,
         })
     }
 
@@ -59,6 +64,38 @@ impl<'a> CdrReader<'a> {
 
     pub fn u8(&mut self) -> Result<u8, CdrError> {
         Ok(self.take(1)?[0])
+    }
+
+    pub fn i8(&mut self) -> Result<i8, CdrError> {
+        Ok(self.u8()? as i8)
+    }
+
+    pub fn u16(&mut self) -> Result<u16, CdrError> {
+        self.align(2);
+        let b: [u8; 2] = self.take(2)?.try_into().unwrap();
+        Ok(if self.little_endian {
+            u16::from_le_bytes(b)
+        } else {
+            u16::from_be_bytes(b)
+        })
+    }
+
+    pub fn f64(&mut self) -> Result<f64, CdrError> {
+        self.align(if self.xcdr2 { 4 } else { 8 });
+        let b: [u8; 8] = self.take(8)?.try_into().unwrap();
+        Ok(if self.little_endian {
+            f64::from_le_bytes(b)
+        } else {
+            f64::from_be_bytes(b)
+        })
+    }
+
+    pub fn f64_array<const N: usize>(&mut self) -> Result<[f64; N], CdrError> {
+        let mut values = [0.0; N];
+        for v in &mut values {
+            *v = self.f64()?;
+        }
+        Ok(values)
     }
 
     pub fn bool(&mut self) -> Result<bool, CdrError> {
@@ -154,6 +191,14 @@ impl CdrWriter {
     pub fn f32(&mut self, v: f32) {
         self.u32(v.to_bits());
     }
+    pub fn u16(&mut self, v: u16) {
+        self.align(2);
+        self.0.extend_from_slice(&v.to_le_bytes());
+    }
+    pub fn f64(&mut self, v: f64) {
+        self.align(8);
+        self.0.extend_from_slice(&v.to_le_bytes());
+    }
     pub fn f32_sequence(&mut self, values: &[f32]) {
         self.u32(values.len() as u32);
         for v in values {
@@ -173,5 +218,24 @@ impl CdrWriter {
         self.u32(12);
         self.u32(500_000_000);
         self.string(frame_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aligns_f64_to_8_in_xcdr1_and_to_4_in_xcdr2() {
+        // A u32 then an f64: XCDR1 pads 4 bytes, XCDR2 does not.
+        let mut xcdr1 = vec![0x00, 0x01, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0];
+        xcdr1.extend(2.5f64.to_le_bytes());
+        let mut r = CdrReader::new(&xcdr1).unwrap();
+        assert_eq!((r.u32().unwrap(), r.f64().unwrap()), (7, 2.5));
+
+        let mut xcdr2 = vec![0x00, 0x07, 0, 0, 7, 0, 0, 0];
+        xcdr2.extend(2.5f64.to_le_bytes());
+        let mut r = CdrReader::new(&xcdr2).unwrap();
+        assert_eq!((r.u32().unwrap(), r.f64().unwrap()), (7, 2.5));
     }
 }

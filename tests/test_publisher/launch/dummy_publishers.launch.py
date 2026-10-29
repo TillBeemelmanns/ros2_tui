@@ -92,6 +92,14 @@ def generate_launch_description():
         output='screen'
     )
 
+    # Map, costmap, GNSS fix and IMU
+    nav_publisher_node = Node(
+        package='ros2_tui_test',
+        executable='nav_publisher',
+        name='nav_publisher',
+        output='screen'
+    )
+
     return LaunchDescription([
         publish_rate_arg,
         enable_cameras_arg,
@@ -102,5 +110,6 @@ def generate_launch_description():
         param_setter_node,
         image_publisher_node,
         lidar_publisher_node,
-        diagnostics_publisher_node
+        diagnostics_publisher_node,
+        nav_publisher_node
     ])

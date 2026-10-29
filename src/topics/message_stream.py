@@ -27,7 +27,9 @@ def choose_qos(node, topic):
     """Reliable if every publisher is, like `ros2 topic hz` does.
 
     Best effort would match any publisher, but a lost fragment drops a whole
-    message, which loses most large raw images even on a good link.
+    message, which loses most large raw images even on a good link. Durable
+    (transient local) if every publisher is, so latched topics like maps
+    deliver the message they published before we subscribed.
     """
     deadline = time.monotonic() + 2.0
     publishers = []
@@ -40,10 +42,13 @@ def choose_qos(node, topic):
     )
     if not reliable:
         return qos_profile_sensor_data
+    durable = all(
+        p.qos_profile.durability == DurabilityPolicy.TRANSIENT_LOCAL for p in publishers
+    )
     return QoSProfile(
         depth=2,
         reliability=ReliabilityPolicy.RELIABLE,
-        durability=DurabilityPolicy.VOLATILE,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL if durable else DurabilityPolicy.VOLATILE,
     )
 
 

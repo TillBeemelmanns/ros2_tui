@@ -11,11 +11,12 @@ use ratatui::{
 };
 
 use super::app::{
-    has_viewer, App, AppMode, CloudView, DetailPaneFocus, DiagnosticsView, TopicView, ViewContent,
-    CHARTS_MAX_DATA_POINTS,
+    has_viewer, App, AppMode, CloudView, DetailPaneFocus, DiagnosticsView, GnssView, ImuPoint,
+    ImuView, TopicView, ViewContent, CHARTS_MAX_DATA_POINTS, IMU_HISTORY,
 };
 use super::cloud_render::{grid_step, ColorMode};
 use super::diagnostics::Level;
+use super::imu;
 use super::pointcloud::PointCloud;
 use super::ros;
 use super::ros::MeasurementStatus;
@@ -65,7 +66,7 @@ fn render_help(f: &mut Frame) {
         Line::from("    <Enter>     - Toggle watch on topic / expand group"),
         Line::from("    d           - View details for selected topic"),
         Line::from(
-            "    v           - View topic marked ◉ (images, point clouds, scans, diagnostics)",
+            "    v           - View topic marked ◉ (images, maps, clouds, scans, GNSS, IMU, diagnostics)",
         ),
         Line::from("    c           - Toggle collapse/uncollapse all groups"),
         Line::from("    s           - Toggle sim time for delay metrics"),
@@ -311,6 +312,18 @@ fn render_view(f: &mut Frame, app: &App) {
             }
             None
         }
+        ViewContent::Gnss(gnss) => {
+            if gnss.latest.is_some() {
+                render_gnss(f, app, gnss, content_area);
+            }
+            None
+        }
+        ViewContent::Imu(imu_view) => {
+            if imu_view.latest.is_some() {
+                render_imu(f, imu_view, content_area);
+            }
+            None
+        }
     };
     view.placement.set(shown);
 
@@ -344,7 +357,304 @@ fn view_has_content(view: &TopicView) -> bool {
         ViewContent::Image(frame) => frame.is_some(),
         ViewContent::Cloud(cloud) => cloud.cloud.is_some(),
         ViewContent::Diagnostics(diag) => !diag.table.is_empty(),
+        ViewContent::Gnss(gnss) => gnss.latest.is_some(),
+        ViewContent::Imu(imu_view) => imu_view.latest.is_some(),
     }
+}
+
+/// Text rows of label and value, the labels padded to one width.
+fn labeled_lines<'a>(rows: Vec<(&'a str, Vec<Span<'a>>)>) -> Vec<Line<'a>> {
+    let width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0) + 2;
+    rows.into_iter()
+        .map(|(label, mut value)| {
+            let mut spans = vec![Span::styled(
+                format!("{:<width$}", label),
+                Style::default().fg(Color::Cyan),
+            )];
+            spans.append(&mut value);
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// Fix details beside a track of recent fixes, north up, in meters.
+fn render_gnss(f: &mut Frame, app: &App, gnss: &GnssView, area: ratatui::layout::Rect) {
+    let Some(fix) = &gnss.latest else {
+        return;
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(48), Constraint::Min(10)])
+        .split(area);
+
+    let status_color = match fix.status {
+        s if s < 0 => Color::Red,
+        0 => Color::Yellow,
+        _ => Color::Green,
+    };
+    let hemisphere = |v: f64, pos: char, neg: char| {
+        format!("{:.7}° {}", v.abs(), if v >= 0.0 { pos } else { neg })
+    };
+    let mut rows = vec![
+        (
+            "Status",
+            vec![Span::styled(
+                fix.status_name(),
+                Style::default()
+                    .fg(status_color)
+                    .add_modifier(Modifier::BOLD),
+            )],
+        ),
+        ("Satellites", vec![Span::raw(fix.services())]),
+        (
+            "Latitude",
+            vec![Span::raw(hemisphere(fix.latitude, 'N', 'S'))],
+        ),
+        (
+            "Longitude",
+            vec![Span::raw(hemisphere(fix.longitude, 'E', 'W'))],
+        ),
+        (
+            "Altitude",
+            vec![Span::raw(format!("{:.2} m", fix.altitude))],
+        ),
+        (
+            "Accuracy",
+            vec![Span::raw(match fix.accuracy() {
+                Some((h, v)) => format!("±{:.2} m horiz, ±{:.2} m vert", h, v),
+                None => "not reported".to_string(),
+            })],
+        ),
+        ("Covariance", vec![Span::raw(fix.covariance_type_name())]),
+        ("Fixes", vec![Span::raw(gnss.fixes.to_string())]),
+    ];
+    if let Some(distance) = gnss.track.distance_from_start() {
+        rows.push(("From start", vec![Span::raw(format!("{:.2} m", distance))]));
+    }
+    f.render_widget(
+        Paragraph::new(labeled_lines(rows)).block(create_block("Fix")),
+        chunks[0],
+    );
+
+    let block = create_block("Track (m, north up)");
+    let inner = block.inner(chunks[1]);
+    let points: Vec<(f64, f64)> = gnss.track.points.iter().copied().collect();
+    let (x_bounds, y_bounds) = equal_aspect_bounds(app, &points, inner);
+    let latest = points.last().copied();
+    let accuracy = fix.accuracy().map(|(h, _)| h);
+    let canvas = ratatui::widgets::canvas::Canvas::default()
+        .block(block)
+        .marker(symbols::Marker::Braille)
+        .x_bounds(x_bounds)
+        .y_bounds(y_bounds)
+        .paint(move |ctx| {
+            ctx.draw(&ratatui::widgets::canvas::Points {
+                coords: &points,
+                color: Color::Cyan,
+            });
+            if let Some((x, y)) = latest {
+                if let Some(radius) = accuracy.filter(|r| *r > 0.0) {
+                    ctx.draw(&ratatui::widgets::canvas::Circle {
+                        x,
+                        y,
+                        radius,
+                        color: Color::Yellow,
+                    });
+                }
+                ctx.print(x, y, Span::styled("◆", Style::default().fg(Color::Yellow)));
+            }
+        });
+    f.render_widget(canvas, chunks[1]);
+}
+
+/// Canvas bounds around `points` where a meter is as long across as up,
+/// given braille dots of 2x4 per cell of the terminal's cell size.
+fn equal_aspect_bounds(
+    app: &App,
+    points: &[(f64, f64)],
+    area: ratatui::layout::Rect,
+) -> ([f64; 2], [f64; 2]) {
+    let (mut min_x, mut max_x, mut min_y, mut max_y) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    for &(x, y) in points {
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+        min_y = min_y.min(y);
+        max_y = max_y.max(y);
+    }
+    if points.is_empty() {
+        (min_x, max_x, min_y, max_y) = (0.0, 0.0, 0.0, 0.0);
+    }
+    let width_px = area.width.max(1) as f64 * app.graphics.cell_width as f64;
+    let height_px = area.height.max(1) as f64 * app.graphics.cell_height as f64;
+    // At least 10 m across, plus a margin around the track.
+    let meters_per_px = ((max_x - min_x) / width_px)
+        .max((max_y - min_y) / height_px)
+        .max(10.0 / width_px.min(height_px))
+        * 1.2;
+    let (cx, cy) = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0);
+    let (half_w, half_h) = (
+        meters_per_px * width_px / 2.0,
+        meters_per_px * height_px / 2.0,
+    );
+    ([cx - half_w, cx + half_w], [cy - half_h, cy + half_h])
+}
+
+/// Latest values and gravity checks above plots of the last seconds.
+fn render_imu(f: &mut Frame, view: &ImuView, area: ratatui::layout::Rect) {
+    let Some(sample) = &view.latest else {
+        return;
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(7), Constraint::Min(6)])
+        .split(area);
+
+    let xyz = |v: [f64; 3], digits: usize| {
+        format!(
+            "x {:>8.digits$}  y {:>8.digits$}  z {:>8.digits$}",
+            v[0], v[1], v[2]
+        )
+    };
+    let not_provided = || {
+        vec![Span::styled(
+            "not provided",
+            Style::default().fg(Color::DarkGray),
+        )]
+    };
+    let orientation = sample.orientation.map(imu::euler);
+    let mut rows = vec![
+        (
+            "Orientation",
+            match orientation {
+                Some([r, p, y]) => vec![Span::raw(format!(
+                    "roll {:>7.2}°  pitch {:>7.2}°  yaw {:>7.2}°",
+                    r.to_degrees(),
+                    p.to_degrees(),
+                    y.to_degrees()
+                ))],
+                None => not_provided(),
+            },
+        ),
+        (
+            "Turn rate",
+            match sample.angular_velocity {
+                Some(w) => vec![Span::raw(format!(
+                    "{} rad/s  |ω| {:.1}°/s",
+                    xyz(w, 3),
+                    (w[0] * w[0] + w[1] * w[1] + w[2] * w[2])
+                        .sqrt()
+                        .to_degrees()
+                ))],
+                None => not_provided(),
+            },
+        ),
+        (
+            "Acceleration",
+            match sample.linear_acceleration {
+                Some(a) => vec![Span::raw(format!(
+                    "{} m/s²  |a| {:.2} m/s²",
+                    xyz(a, 2),
+                    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
+                ))],
+                None => not_provided(),
+            },
+        ),
+    ];
+    if let Some(a) = sample.linear_acceleration {
+        let [roll, pitch] = imu::tilt_from_gravity(a);
+        let mut value = vec![Span::raw(format!(
+            "on {}  tilt roll {:.1}° pitch {:.1}°",
+            imu::gravity_axis(a),
+            roll.to_degrees(),
+            pitch.to_degrees()
+        ))];
+        // At rest the orientation should roughly agree with gravity.
+        if let Some([r, p, _]) = orientation {
+            let off = (r - roll).abs().max((p - pitch).abs()).to_degrees();
+            let (text, color) = if off < 5.0 {
+                ("  matches orientation".to_string(), Color::Green)
+            } else {
+                (format!("  {:.0}° off orientation", off), Color::Yellow)
+            };
+            value.push(Span::styled(text, Style::default().fg(color)));
+        }
+        rows.push(("Gravity", value));
+    }
+    rows.push(("Frame", vec![Span::raw(sample.frame_id.clone())]));
+    f.render_widget(Paragraph::new(labeled_lines(rows)), chunks[0]);
+
+    let plots = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(chunks[1]);
+    let now = std::time::Instant::now();
+    let series = |pick: fn(&ImuPoint) -> Option<[f64; 3]>| {
+        let mut axes: [Vec<(f64, f64)>; 3] = Default::default();
+        for entry in &view.history {
+            if let Some(v) = pick(entry) {
+                let t = -now.duration_since(entry.at).as_secs_f64();
+                for (axis, values) in axes.iter_mut().enumerate() {
+                    values.push((t, v[axis]));
+                }
+            }
+        }
+        axes
+    };
+    render_xyz_chart(
+        f,
+        "Acceleration (m/s²)",
+        &series(|p| p.acceleration),
+        plots[0],
+    );
+    render_xyz_chart(f, "Turn rate (rad/s)", &series(|p| p.turn_rate), plots[1]);
+}
+
+/// Plot x, y and z over the last seconds, the y axis fitted to the data.
+fn render_xyz_chart(
+    f: &mut Frame,
+    title: &str,
+    axes: &[Vec<(f64, f64)>; 3],
+    area: ratatui::layout::Rect,
+) {
+    let (mut lo, mut hi) = axes
+        .iter()
+        .flatten()
+        .fold((f64::MAX, f64::MIN), |(lo, hi), (_, v)| {
+            (lo.min(*v), hi.max(*v))
+        });
+    if lo > hi {
+        (lo, hi) = (-1.0, 1.0);
+    }
+    let pad = ((hi - lo) * 0.1).max(0.05);
+    let (lo, hi) = (lo - pad, hi + pad);
+    let colors = [Color::Red, Color::Green, Color::LightBlue];
+    let datasets = ["x", "y", "z"]
+        .into_iter()
+        .zip(axes)
+        .zip(colors)
+        .map(|((name, data), color)| {
+            Dataset::default()
+                .name(name)
+                .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(Style::default().fg(color))
+                .data(data)
+        })
+        .collect();
+    let span = IMU_HISTORY.as_secs_f64();
+    let chart = Chart::new(datasets)
+        .block(create_block(title))
+        .x_axis(
+            Axis::default()
+                .bounds([-span, 0.0])
+                .labels([format!("-{:.0}s", span), "now".to_string()]),
+        )
+        .y_axis(
+            Axis::default()
+                .bounds([lo, hi])
+                .labels([format!("{:.2}", lo), format!("{:.2}", hi)]),
+        );
+    f.render_widget(chart, area);
 }
 
 fn level_style(level: Level) -> Style {
@@ -447,6 +757,15 @@ fn view_info_lines<'a>(app: &App, view: &'a TopicView) -> Vec<Line<'a>> {
                 spans.push(Span::styled("  Frame ", label));
                 spans.push(Span::raw(frame.frame_id.clone()));
             }
+            if !frame.extra.is_empty() {
+                let mut extra = vec![];
+                for (i, (name, value)) in frame.extra.iter().enumerate() {
+                    let gap = if i == 0 { "" } else { "  " };
+                    extra.push(Span::styled(format!("{}{} ", gap, name), label));
+                    extra.push(Span::raw(value.clone()));
+                }
+                second = Some(Line::from(extra));
+            }
         }
         ViewContent::Cloud(cloud_view) if cloud_view.cloud.is_some() => {
             let cloud = cloud_view.cloud.as_ref().unwrap();
@@ -546,10 +865,20 @@ fn view_info_lines<'a>(app: &App, view: &'a TopicView) -> Vec<Line<'a>> {
         ));
     } else if let Some(age) = view.last_frame_at.map(|at| at.elapsed()) {
         if age.as_secs_f64() > 2.0 {
-            spans.push(Span::styled(
-                format!("  No message for {:.0}s", age.as_secs_f64()),
-                Style::default().fg(Color::Yellow),
-            ));
+            // A single message so far is likely a latched topic such as a
+            // map, which is fine; a stream that stopped is not.
+            let (text, style) = if view.topic_hz.is_none() {
+                (
+                    format!("  Last message {:.0}s ago", age.as_secs_f64()),
+                    Style::default().fg(Color::DarkGray),
+                )
+            } else {
+                (
+                    format!("  No message for {:.0}s", age.as_secs_f64()),
+                    Style::default().fg(Color::Yellow),
+                )
+            };
+            spans.push(Span::styled(text, style));
         }
     }
     let mut lines = vec![Line::from(spans)];

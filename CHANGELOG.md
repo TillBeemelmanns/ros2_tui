@@ -24,14 +24,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Topics: diagnostics viewer for `diagnostic_msgs/msg/DiagnosticArray` topics:
   statuses merged from all publishers into one table sorted by severity, with
   per-status details, a problems-only filter and stale detection after 5 s.
+- Topics: `OccupancyGrid` maps and costmaps open in the image viewer, north
+  up, with resolution, size, origin and coverage statistics.
+- Topics: GNSS viewer for `sensor_msgs/msg/NavSatFix` with fix status,
+  satellite systems, accuracy and a track of recent fixes.
+- Topics: IMU viewer for `sensor_msgs/msg/Imu` with orientation, turn rate,
+  acceleration, a gravity check against the orientation and 10 s plots.
+- Topics: viewers subscribe transient local when all publishers are, so
+  latched topics such as maps arrive even if published earlier.
 - Topics: the mouse wheel zooms the point cloud viewer; the mouse is captured
   only while it is open.
 - Topics: a `◉` in the new `V` column marks topics that can be viewed.
 - Test fixtures: an `image_publisher` node publishing an animated camera image
   (raw and JPEG) and a depth image, a `lidar_publisher` node simulating a
-  32-beam lidar, a 2D laser scanner and a colored cloud, and a
-  `diagnostics_publisher` node simulating several drivers' diagnostics, all
-  started by `dummy_publishers.launch.py`.
+  32-beam lidar, a 2D laser scanner and a colored cloud, a
+  `diagnostics_publisher` node simulating several drivers' diagnostics, and a
+  `nav_publisher` node publishing a latched map, a costmap, a GNSS fix and an
+  IMU, all started by `dummy_publishers.launch.py`.
 
 ### Fixed
 - Test fixtures: `multi_publisher` now publishes real JPEG camera images,

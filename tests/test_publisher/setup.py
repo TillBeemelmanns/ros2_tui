@@ -26,6 +26,7 @@ setup(
             'image_publisher = ros2_tui_test.image_publisher:main',
             'lidar_publisher = ros2_tui_test.lidar_publisher:main',
             'diagnostics_publisher = ros2_tui_test.diagnostics_publisher:main',
+            'nav_publisher = ros2_tui_test.nav_publisher:main',
         ],
     },
 )

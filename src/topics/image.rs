@@ -24,6 +24,8 @@ pub struct DecodedImage {
     pub frame_id: String,
     /// Header stamp in seconds.
     pub stamp: f64,
+    /// Further (label, value) facts for the info line, e.g. of a map.
+    pub extra: Vec<(&'static str, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -119,6 +121,7 @@ pub fn decode_message(
         encoding,
         frame_id,
         stamp,
+        extra: Vec::new(),
     })
 }
 

@@ -6,6 +6,16 @@ See [CHANGELOG.md](CHANGELOG.md) for what has already shipped.
 
 ## Recently shipped
 
+- ✅ **Sensor viewers** — `v` opens a viewer for images, compressed images,
+  maps and costmaps, point clouds, laser scans, GNSS fixes, IMUs and
+  diagnostics, with kitty graphics over SSH and text fallbacks (unreleased).
+- ✅ **Realistic test publishers** — real JPEG cameras, a simulated lidar and
+  2D scanner, a latched map, GNSS, IMU and diagnostics replace placeholder
+  bytes (unreleased).
+- ✅ **Parallel per-node parameter fetch** — a params refresh dumps up to 8
+  nodes concurrently (0.1.9).
+- ✅ **Multi-distro ROS2 CI** — the integration job runs on Humble and
+  Lyrical (0.1.8).
 - ✅ **Timeouts on every one-shot `ros2` call** — an unresponsive node can no
   longer freeze a refresh (0.1.6).
 - ✅ **Shell-safe params command layer** — arguments are passed directly to
@@ -16,6 +26,31 @@ See [CHANGELOG.md](CHANGELOG.md) for what has already shipped.
 - ✅ **Dockerized test environment** (`docker/run.sh`) and **ratatui 0.30**
   upgrade; fixed the `multi_publisher` test node hanging parameter queries
   (0.1.5).
+
+## Viewers
+
+Next message types, ordered by how much they help check a robot over SSH:
+
+- [ ] **TF tree** (`/tf`, `/tf_static`) — frames as a tree with parent,
+  publish rate, age and stale/missing links; the most common cause of "the
+  sensor works but nothing shows up in RViz".
+- [ ] **Odometry, Path and PoseStamped** — trajectory and current pose in the
+  point cloud viewer's top view, with speed and covariance readouts; plus
+  `Twist`/`TwistStamped` (`cmd_vel`) as linear/angular velocity plots.
+- [ ] **JointState** — a table of positions, velocities and efforts with bars,
+  to spot a stuck or noisy joint.
+- [ ] **BatteryState** — charge, voltage, current, temperature and health.
+- [ ] **Scalar sensors** — `Range`, `Temperature`, `FluidPressure`,
+  `Illuminance`, `MagneticField`, `RelativeHumidity` as a value with a plot.
+- [ ] **Plot any numeric field** — pick fields of any message and plot them,
+  like rqt_plot. Needs a generic decoder driven by the message definition
+  (`ros2 interface show`), which would also enable full echo with arrays.
+- [ ] **CameraInfo next to its image** — intrinsics and distortion, and a
+  warning when the size does not match the image.
+- [ ] **MarkerArray** in the point cloud viewer.
+- [ ] **Fixed frame for point clouds** — transform clouds and scans into a
+  frame such as `base_link` via TF instead of showing the sensor frame.
+- [ ] **Screenshots of the viewers** in the README.
 
 ## Planned features
 
@@ -32,17 +67,32 @@ See [CHANGELOG.md](CHANGELOG.md) for what has already shipped.
   generic `ParamError::Io`/`TopicError::Io`; a distinct variant gives clearer
   in-UI messaging ("node X timed out") vs. real I/O failures.
 - [ ] **Liveness detection for streaming children** — the long-lived
-  `ros2 topic hz`/`delay`/`echo` processes have no staleness/restart logic if
-  they silently die; detect and re-spawn or flag the row.
+  `ros2 topic echo` process has no staleness/restart logic if it silently
+  dies; detect and re-spawn or flag it. Viewers show when their helper ends,
+  but do not restart it.
 - [ ] **Graceful mid-session loss of `ros2`** — the binaries only check
   `ros2 --help` at startup; handle the CLI/daemon disappearing while running.
 
+## Architecture
+
+- [ ] **One long-lived `rclpy` helper for all ROS access** — today every
+  watched topic starts its own `ros2 topic hz` and `ros2 topic delay` (about
+  100 MB and 2.7 s to the first rate each, measured on Lyrical), and every
+  viewer its own `message_stream.py` (96 MB, 0.3 s). One helper process
+  serving all subscriptions, rates, delays and the topic list over a single
+  pipe would cut memory and startup by an order of magnitude when watching
+  many topics, and make liveness handling simpler.
+- [ ] **Optional Python-free transport** — receive the serialized messages
+  directly with a pure-Rust DDS implementation (e.g. RustDDS) and a Zenoh
+  client for `rmw_zenoh`. The Rust side already decodes CDR, so this would
+  need neither Python nor ROS libraries at runtime and could even run on a
+  machine without ROS. Costs: each RMW's wire format and discovery setup
+  (domain ID, discovery server, security) must be handled, and shared-memory
+  transport is not available. Linking ROS directly (`r2r`, `rclrs`) is not an
+  option, as it ties every binary to one distribution.
+
 ## Performance
 
-- [ ] **Parallelize per-node parameter fetch** — `get_param_list_with_values`
-  (`src/params/ros.rs:577`) dumps nodes sequentially; now that each call is
-  bounded by a timeout, fan them out (e.g. `join_all`) for much faster refreshes
-  on large graphs.
 - [ ] **Reduce cloning in the app layer** — `app.rs` does a lot of `.clone()` on
   tree/visible-item state each frame; profile and trim where it matters.
 
@@ -56,6 +106,10 @@ See [CHANGELOG.md](CHANGELOG.md) for what has already shipped.
   Docker image so the real `ros2` integration path is exercised on every PR.
 - [ ] **Topic-side live integration tests** — mirror the params live tests for
   `get_topic_list` and the hz/delay parsers against the dummy publishers.
+- [ ] **Viewer end-to-end tests in CI** — drive the `topics` binary in a
+  pseudo terminal against the test publishers, answering the terminal queries
+  like a kitty-capable terminal, and check the decoded frames and info lines
+  for every viewer on each distribution.
 - [ ] **Code coverage reporting** — add `cargo llvm-cov` (or similar) to CI.
 
 ## Maintainability
@@ -79,7 +133,5 @@ See [CHANGELOG.md](CHANGELOG.md) for what has already shipped.
 
 - [ ] **Declare an MSRV** — add `rust-version` to `Cargo.toml` and a pinned-toolchain
   job to CI so the minimum supported Rust is explicit and enforced.
-- [ ] **Multi-distro ROS2 CI matrix** — Humble and Lyrical are exercised
-  locally via Docker (`ROS_DISTRO=...`); run both in CI to catch CLI output drift.
 - [ ] **Verify the wheel build in CI** — run `maturin build` on PRs so packaging
   regressions are caught before a release tag.

@@ -1,6 +1,9 @@
 use super::cloud_render::{self, CameraPreset, CloudCamera, ColorMode, RenderOptions};
 use super::diagnostics::{self, DiagnosticsTable};
 use super::image::{self, DecodedImage};
+use super::imu::{self, ImuSample};
+use super::navsat::{self, NavSatFix, Track};
+use super::occupancy;
 use super::pointcloud::{self, PointCloud};
 use super::ros;
 use super::ros::MeasurementStatus;
@@ -24,6 +27,10 @@ pub const CHARTS_MAX_DATA_POINTS: usize = 100;
 /// Selectable viewer frame rate limits.
 pub const VIEW_FPS_STEPS: [u32; 6] = [1, 2, 5, 10, 15, 30];
 const DEFAULT_VIEW_FPS: u32 = 10;
+/// IMUs publish fast; a higher default keeps their plots detailed.
+const DEFAULT_IMU_FPS: u32 = 30;
+/// Span of the IMU plots.
+pub const IMU_HISTORY: Duration = Duration::from_secs(10);
 /// Rate limit for diagnostics, high enough to never drop a message: every
 /// driver publishes its own partial array, and each one matters.
 const UNTHROTTLED_FPS: u32 = 1000;
@@ -55,6 +62,25 @@ pub fn has_viewer(msg_type: &str) -> bool {
         || pointcloud::is_pointcloud_type(msg_type)
         || pointcloud::is_laserscan_type(msg_type)
         || diagnostics::is_diagnostics_type(msg_type)
+        || occupancy::is_occupancy_grid_type(msg_type)
+        || navsat::is_navsatfix_type(msg_type)
+        || imu::is_imu_type(msg_type)
+}
+
+/// Empty view content for a topic of `msg_type`.
+fn view_content(msg_type: &str) -> ViewContent {
+    if pointcloud::is_pointcloud_type(msg_type) || pointcloud::is_laserscan_type(msg_type) {
+        ViewContent::Cloud(Box::new(CloudView::new()))
+    } else if diagnostics::is_diagnostics_type(msg_type) {
+        ViewContent::Diagnostics(DiagnosticsView::default())
+    } else if navsat::is_navsatfix_type(msg_type) {
+        ViewContent::Gnss(GnssView::default())
+    } else if imu::is_imu_type(msg_type) {
+        ViewContent::Imu(ImuView::default())
+    } else {
+        // Images and occupancy grids.
+        ViewContent::Image(None)
+    }
 }
 
 /// What a topic view shows; `None` until the first message arrives.
@@ -62,6 +88,29 @@ pub enum ViewContent {
     Image(Option<DecodedImage>),
     Cloud(Box<CloudView>),
     Diagnostics(DiagnosticsView),
+    Gnss(GnssView),
+    Imu(ImuView),
+}
+
+/// GNSS viewer state: the latest fix and the track of recent ones.
+#[derive(Default)]
+pub struct GnssView {
+    pub latest: Option<NavSatFix>,
+    pub track: Track,
+    pub fixes: usize,
+}
+
+/// IMU viewer state: the latest sample and the recent history the plots show.
+#[derive(Default)]
+pub struct ImuView {
+    pub latest: Option<ImuSample>,
+    pub history: VecDeque<ImuPoint>,
+}
+
+pub struct ImuPoint {
+    pub at: Instant,
+    pub acceleration: Option<[f64; 3]>,
+    pub turn_rate: Option<[f64; 3]>,
 }
 
 /// Diagnostics viewer state: statuses merged from all arrays received.
@@ -227,6 +276,26 @@ impl TopicView {
             (ViewContent::Cloud(view), FrameContent::Cloud(cloud)) => view.set_cloud(cloud),
             (ViewContent::Diagnostics(view), FrameContent::Diagnostics(statuses)) => {
                 view.table.update(statuses, now)
+            }
+            (ViewContent::Gnss(view), FrameContent::Gnss(fix)) => {
+                view.track.push(&fix);
+                view.fixes += 1;
+                view.latest = Some(fix);
+            }
+            (ViewContent::Imu(view), FrameContent::Imu(sample)) => {
+                view.history.push_back(ImuPoint {
+                    at: now,
+                    acceleration: sample.linear_acceleration,
+                    turn_rate: sample.angular_velocity,
+                });
+                while view
+                    .history
+                    .front()
+                    .is_some_and(|p| now.duration_since(p.at) > IMU_HISTORY)
+                {
+                    view.history.pop_front();
+                }
+                view.latest = Some(sample);
             }
             _ => return,
         }
@@ -755,19 +824,13 @@ impl App {
         let view = TopicView {
             topic_name: topic.name.clone(),
             msg_type: topic.msg_type.clone(),
-            content: if pointcloud::is_pointcloud_type(&topic.msg_type)
-                || pointcloud::is_laserscan_type(&topic.msg_type)
-            {
-                ViewContent::Cloud(Box::new(CloudView::new()))
-            } else if diagnostics::is_diagnostics_type(&topic.msg_type) {
-                ViewContent::Diagnostics(DiagnosticsView::default())
-            } else {
-                ViewContent::Image(None)
-            },
+            content: view_content(&topic.msg_type),
             frame_seq: 0,
             error: None,
             max_fps: if diagnostics::is_diagnostics_type(&topic.msg_type) {
                 UNTHROTTLED_FPS
+            } else if imu::is_imu_type(&topic.msg_type) {
+                DEFAULT_IMU_FPS
             } else {
                 DEFAULT_VIEW_FPS
             },
@@ -933,7 +996,10 @@ impl App {
                     .show(out, &rendered.image, rendered.seq, rect, force),
                 None => self.kitty.clear(out),
             },
-            ViewContent::Image(None) | ViewContent::Diagnostics(_) => self.kitty.clear(out),
+            ViewContent::Image(None)
+            | ViewContent::Diagnostics(_)
+            | ViewContent::Gnss(_)
+            | ViewContent::Imu(_) => self.kitty.clear(out),
         }
     }
 
