@@ -113,7 +113,8 @@ Releases [0.1.0] through [0.1.4] predate this changelog. See the
 [GitHub releases](https://github.com/TillBeemelmanns/ros2_tui/releases) for
 their history.
 
-[Unreleased]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.7...v0.1.8
 [0.1.6]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.4...v0.1.5
