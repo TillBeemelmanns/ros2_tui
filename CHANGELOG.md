@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-10-29
+
+Re-release of 0.1.9, which was tagged before its version bump and therefore
+never reached crates.io or PyPI. Contains all 0.1.9 changes.
+
+### Fixed
+- `Cargo.lock` pinned `num_threads` 0.1.9, which does not exist on crates.io,
+  breaking every build from a clean registry (including the Docker image).
+- The release workflow now checks that the tag matches the `Cargo.toml`
+  version and that `Cargo.lock` resolves before building or publishing.
+
 ## [0.1.9] - 2026-10-29
 
 ### Changed
@@ -113,7 +124,8 @@ Releases [0.1.0] through [0.1.4] predate this changelog. See the
 [GitHub releases](https://github.com/TillBeemelmanns/ros2_tui/releases) for
 their history.
 
-[Unreleased]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.7...v0.1.8
 [0.1.6]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.5...v0.1.6

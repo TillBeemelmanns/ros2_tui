@@ -892,7 +892,7 @@ dependencies = [
 
 [[package]]
 name = "num_threads"
-version = "0.1.9"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cabcc654086861f9e1bc5115258de62ef92c79b20f4615a1b0cc57c4e82027d4"
 dependencies = [
@@ -1294,7 +1294,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "ros2_tui"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "clap",
  "crossbeam",

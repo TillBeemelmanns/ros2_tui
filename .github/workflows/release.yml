@@ -19,6 +19,8 @@ jobs:
     outputs:
       version: ${{ steps.extract.outputs.version }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Extract version from tag
         id: extract
         run: |
@@ -28,6 +30,14 @@ jobs:
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # Fail before anything is published: a tag that doesn't match Cargo.toml
+      # would ship artifacts under the old version and break the crates.io step.
+      - name: Check tag matches Cargo.toml version
+        run: ./scripts/check-release-version.sh "$GITHUB_REF_NAME"
+
+      - name: Check Cargo.lock resolves against crates.io
+        run: cargo fetch --locked
 
   build_binaries:
     name: Build release binaries
