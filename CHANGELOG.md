@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-10-29
+
 ### Changed
 - Params: a refresh now dumps up to 8 nodes' parameters concurrently instead
   of one at a time. With 32 nodes a full refresh drops from ~60 s to ~6 s, so
