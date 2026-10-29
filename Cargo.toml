@@ -35,7 +35,7 @@ ratatui = "0.30.2"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_yaml_ng = "0.10.0"
-tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "process", "time", "macros", "io-util", "fs"] }
+tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "process", "time", "macros", "io-util", "fs", "sync"] }
 
 [dev-dependencies]
 tokio = { version = "1.54.1", features = ["rt", "macros", "time"] }

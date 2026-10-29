@@ -413,7 +413,9 @@ impl TopicDetailWatcher {
     }
 
     /// Stream one metric for `topic_name`, restarting the CLI process if it
-    /// exits, until the topic is reported as no longer published.
+    /// exits, until the topic is reported as no longer published or (for
+    /// delay) as having no header stamp. Both are terminal: restarting would
+    /// only respawn a Python process every few seconds to learn the same thing.
     async fn monitor_metric(metric: Metric, topic_name: String, sender: Sender<TopicMessage>) {
         loop {
             if let Ok(mut child) = metric.start(&topic_name).await {
@@ -428,11 +430,12 @@ impl TopicDetailWatcher {
                         (None, Some(std_dev), _) => {
                             metric.std_dev_message(topic_name.clone(), std_dev)
                         }
-                        (None, None, MeasurementStatus::NotMeasuring) => {
-                            let _ = sender.send(metric.status_message(
-                                topic_name.clone(),
-                                MeasurementStatus::NotMeasuring,
-                            ));
+                        (
+                            None,
+                            None,
+                            status @ (MeasurementStatus::NotMeasuring | MeasurementStatus::NoStamp),
+                        ) => {
+                            let _ = sender.send(metric.status_message(topic_name.clone(), status));
                             let _ = child.kill().await;
                             return;
                         }

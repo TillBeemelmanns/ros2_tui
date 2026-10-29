@@ -2,6 +2,12 @@ use serde::{Deserialize, Serialize};
 use serde_yaml_ng::Value;
 use std::collections::HashSet;
 use std::fmt;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
+
+/// Maximum number of `ros2 param dump` processes run at once during a refresh.
+const PARAM_DUMP_CONCURRENCY: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ParamInfo {
@@ -577,11 +583,26 @@ pub async fn get_param_list_with_values() -> Result<Vec<ParamInfo>, ParamError> 
     let nodes = get_node_list().await?;
     crate::debug_log(&format!("Found {} nodes to query", nodes.len()));
 
-    // Step 2: Get parameters for each node using dump
-    let mut all_params = Vec::new();
+    // Step 2: Dump each node's parameters. Every `ros2 param dump` is a fresh
+    // Python process costing ~0.5-1 s of startup, so run a bounded number
+    // concurrently instead of one after another.
+    let semaphore = Arc::new(Semaphore::new(PARAM_DUMP_CONCURRENCY));
+    let mut tasks = JoinSet::new();
+    for (index, node_name) in nodes.into_iter().enumerate() {
+        let semaphore = Arc::clone(&semaphore);
+        tasks.spawn(async move {
+            let _permit = semaphore.acquire_owned().await;
+            let result = get_node_params_dump(&node_name).await;
+            (index, node_name, result)
+        });
+    }
+    let mut results = tasks.join_all().await;
+    // Keep the sorted node order regardless of completion order
+    results.sort_by_key(|(index, _, _)| *index);
 
-    for node_name in nodes {
-        match get_node_params_dump(&node_name).await {
+    let mut all_params = Vec::new();
+    for (_, node_name, result) in results {
+        match result {
             Ok(mut node_params) => {
                 crate::debug_log(&format!(
                     "Node {} has {} parameters",

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Params: a refresh now dumps up to 8 nodes' parameters concurrently instead
+  of one at a time. With 32 nodes a full refresh drops from ~60 s to ~6 s, so
+  values no longer lag several refresh intervals behind on larger graphs.
+
+### Fixed
+- Topics: watching a topic without a header no longer respawns
+  `ros2 topic delay` every 2 seconds; delay monitoring stops once the topic is
+  known to have no stamp.
+
 ## [0.1.8] - 2026-10-29
 
 ### Added
