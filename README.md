@@ -26,8 +26,7 @@ A powerful Terminal User Interface (TUI) for monitoring and managing ROS2 topics
 ## Prerequisites
 
 - ROS2 installed and sourced
-- The `ros2` command available in your shell (`params` runs `ros2 param`; `topics` uses it to check that ROS2 is sourced)
-- `python3` with `rclpy`, which every ROS2 installation includes: the `topics` app does all its ROS access through one embedded `rclpy` helper. No message packages are compiled into the binaries, so one build works on every distribution.
+- `python3` with `rclpy`, which every ROS2 installation includes: each app does all its ROS access through one embedded `rclpy` helper, and neither runs the `ros2` CLI. No message packages are compiled into the binaries, so one build works on every distribution.
 
 ## Installation
 
@@ -183,8 +182,8 @@ Press `v` on a topic marked `◉` to see its data. Common keys in every viewer: 
 
 ### Highlights
 - 🧭 Node/namespace browser that mirrors `ros2 param list` hierarchies
-- 🔄 Live value polling keeps displayed values fresh without manual refreshes
-- ✏️ In-terminal editing with type validation plus YAML dump/load workflows
+- 🔄 Live value polling keeps displayed values fresh without manual refreshes, with all nodes queried at once by one helper process
+- ✏️ In-terminal editing that keeps each parameter's type, plus YAML dump/load workflows
 - 🧰 Built-in search, success/error banners, and contextual help overlays
 
 ### Usage
@@ -196,7 +195,7 @@ params
 params --refresh 2
 ```
 
-The app groups dotted parameter names into expandable namespaces so large graphs stay navigable. Value edits, dumps, and loads run through the ROS2 CLI and report their outcome inline.
+The app groups dotted parameter names into expandable namespaces so large graphs stay navigable. Value edits, dumps, and loads go through the parameter services of the nodes and report their outcome inline.
 
 ### Navigation & Controls
 - `↑`/`↓` or `j`/`k` move through nodes and parameters; `←`/`→` or `h`/`l` collapse/expand namespaces
@@ -204,22 +203,24 @@ The app groups dotted parameter names into expandable namespaces so large graphs
 - `Space`, `r`, or `F5` refresh on demand; `Esc` exits dialogs, cancels search, or quits
 
 ### Parameter Actions
-- `s` edits the selected parameter (array values are normalised for ROS2 compatibility)
-- `d` dumps the current node to YAML via `ros2 param dump`
-- `Ctrl+l` loads YAML into the active node using `ros2 param load`
+- `s` edits the selected parameter. The value is read as YAML like `ros2 param set` does (`[1, 2]` is an array, `true` a boolean), but keeps the parameter's type where it can: `80` sets a double parameter to `80.0`, and any text sets a string parameter.
+- `d` dumps the current node to YAML, in the format of `ros2 param dump`
+- `Ctrl+l` loads such a YAML file into the active node, like `ros2 param load`; parameters that already have the file's value are skipped, so a dump loads back even with read-only parameters in it
 - Inline success/error banners acknowledge operations and fade automatically
 
 ### Command-Line Options
 - `--refresh <SECONDS>` – Parameter polling cadence (default: 5)
-- `--no-initial-fetch` – Skip the initial `ros2 param list` scan
+- `--no-initial-fetch` – Skip the initial parameter scan
 - `--verbose` / `-v` – Emit detailed logs to `params_debug.log`
 - `--help`, `--version` – Standard metadata flags
 
 ### Architecture Highlights
-- A primary watcher repeatedly shells out to `ros2 param list`, building a `ParamTree` that mirrors node hierarchies
-- A secondary watcher streams value lookups to populate the table without blocking the UI thread
-- Dump/load/edit workflows wrap the ROS2 CLI while scheduling delayed refreshes to reflect state changes
-- All ROS2 interaction happens on background threads, keeping the Crossterm-driven interface responsive under load
+- All parameter access goes through `param_bridge.py`, one long-lived `rclpy` helper embedded in the binary, instead of a `ros2 param` process per node and request. It calls the nodes' `list_parameters`, `get_parameters` and `set_parameters` services directly, all nodes at once, and keeps its service clients between refreshes.
+- Nodes that do not answer within 5 seconds are left out of that refresh instead of holding it up.
+- Right after the start, the list is sent as nodes are discovered, so the first parameters show without waiting for the whole graph.
+- After a set or load, the helper reads the node's parameters back, so the table shows what the node accepted.
+- If the helper exits, it is restarted and requests made meanwhile are sent to the new one.
+- A `ParamTree` mirrors node hierarchies; all ROS interaction happens off the UI thread, keeping the interface responsive under load
 
 ## Development
 
@@ -264,7 +265,7 @@ When you push a tag such as `v0.3.0`, the hook calls `scripts/check-release-vers
 | Tool | Language | Dependencies | Features | Performance |
 |------|----------|-------------|----------|-------------|
 | topics (ours) | Rust | rclpy | TUI, Real-time metrics, sensor viewers | ⚡ Fast & Easy |
-| params (ours) | Rust | ros2 CLI only | TUI, Parameter management | ⚡ Fast & Easy |
+| params (ours) | Rust | rclpy | TUI, Parameter management | ⚡ Fast & Easy |
 | rqt_topic | Python | Full ROS2 + Qt | GUI, Rich features | 🐌 Heavy |
 | rviz2 | C++ | Full ROS2 + Qt + OpenGL | GUI, 3D visualization | 🖥️ Needs a display |
 | ros2 topic | Python | Full ROS2 | CLI only | 🚀 Fast but cumbersome |

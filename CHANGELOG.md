@@ -17,8 +17,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that stops publishing drops to 0 Hz instead of keeping its old rate.
 - Topics: subscriber counts no longer include the app's own subscriptions.
 - Topics: the echo pane shows at most 20 messages per second.
+- Params: all parameter access goes through one long-lived `rclpy` helper
+  that calls the nodes' parameter services directly, instead of a
+  `ros2 node list` plus a `ros2 param dump`, `set` or `load` process per
+  node and request. A refresh queries all nodes at once, a node that does
+  not answer is skipped after 5 seconds, and the first parameters show as
+  soon as nodes are discovered. Neither app needs the `ros2` CLI any more.
+- Params: setting a value keeps the parameter's type where it can: an
+  integer sets a double parameter, and any text sets a string parameter.
+- Params: array types show as `Integer[]`, `Double[]` and so on.
 
 ### Fixed
+- Params: `Ctrl+l` opens the load dialog; the `l` navigation key took it before.
+- Params: loading a dump skips parameters that already have the file's
+  value, so read-only parameters no longer make it fail.
 - Topics: if the ROS helper exits, it is restarted and the watched topics,
   echo and open viewer are restored; watched topics stay listed even if a
   topic list misses them.

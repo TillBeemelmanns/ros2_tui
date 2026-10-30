@@ -12,6 +12,7 @@ use std::io::{self, stdout, Write};
 use std::time::Duration;
 
 use ros2_tui::common::graphics;
+use ros2_tui::common::ros_helper;
 use ros2_tui::common::*;
 use ros2_tui::topics::*;
 
@@ -69,14 +70,15 @@ fn main() -> io::Result<()> {
         refresh_rate, detail_refresh_rate
     ));
 
-    // Check if ros2 is available
-    debug_log("Checking if ros2 command is available...");
-    if let Err(e) = std::process::Command::new("ros2").arg("--help").output() {
-        debug_log(&format!("Error: ros2 command not found: {:?}", e));
-        eprintln!("Error: ros2 command not found. Please ensure ROS2 is installed and sourced.");
+    // All ROS access goes through an rclpy helper, which needs ROS2 sourced.
+    if let Err(e) = ros_helper::check_ros_environment() {
+        debug_log(&format!("ROS2 environment check failed: {}", e));
+        eprintln!(
+            "Error: cannot use rclpy ({}). Please ensure ROS2 is installed and sourced.",
+            e
+        );
         std::process::exit(1);
     }
-    debug_log("ros2 command is available");
 
     // setup terminal
     install_panic_hook();

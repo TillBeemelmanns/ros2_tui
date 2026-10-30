@@ -1,9 +1,7 @@
 use super::ros;
-use super::watcher::{
-    ParamMessage, ParamValueWatcherHandle, ParamWatchMessage, ParamWatcherHandle,
-};
+use super::watcher::{ParamBridgeHandle, ParamMessage, ParamWatchMessage};
 use crate::common::{ParamTree, ParamTreeItem};
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::channel::Receiver;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -75,19 +73,14 @@ pub struct ParamsApp {
     pub warning_message: String,
 
     message_receiver: Receiver<ParamMessage>,
-    watch_sender: Sender<ParamWatchMessage>,
-    _param_watcher: ParamWatcherHandle,
-    #[allow(dead_code)]
-    value_watcher: ParamValueWatcherHandle,
+    bridge: ParamBridgeHandle,
 }
 
 impl ParamsApp {
     pub fn new(refresh_interval: Duration, initial_fetch: bool) -> Self {
         let (param_sender, param_receiver) = crossbeam::channel::unbounded();
 
-        let param_watcher =
-            ParamWatcherHandle::new(param_sender.clone(), refresh_interval, initial_fetch);
-        let (value_watcher, watch_sender) = ParamValueWatcherHandle::new(param_sender);
+        let bridge = ParamBridgeHandle::new(param_sender, refresh_interval, initial_fetch);
 
         Self {
             should_quit: false,
@@ -115,9 +108,7 @@ impl ParamsApp {
             file_cursor: 0,
             warning_message: String::new(),
             message_receiver: param_receiver,
-            watch_sender,
-            _param_watcher: param_watcher,
-            value_watcher,
+            bridge,
         }
     }
 
@@ -189,16 +180,8 @@ impl ParamsApp {
                     "Successfully set {}/{} to {}",
                     node_name, param_name, new_value
                 ));
+                // The helper sends the node's parameters after every set.
                 self.success_message_time = Some(std::time::Instant::now());
-                // Use delayed refresh to allow ROS2 parameter set to take effect (100ms delay)
-                let _ = self
-                    .watch_sender
-                    .send(ParamWatchMessage::RefreshNodeDelayed {
-                        node_name: node_name.clone(),
-                        delay_ms: 100,
-                    });
-                // Also refresh the specific parameter after a longer delay as backup
-                // This runs after the delayed node refresh to ensure consistency
             }
             ParamMessage::ParamSetError {
                 node_name,
@@ -227,11 +210,8 @@ impl ParamsApp {
                     "Successfully loaded parameters to {} from {}",
                     node_name, file_path
                 ));
+                // The helper sends the node's parameters after every load.
                 self.success_message_time = Some(std::time::Instant::now());
-                // Refresh all parameters for this node
-                let _ = self
-                    .watch_sender
-                    .send(ParamWatchMessage::RefreshNode { node_name });
             }
             ParamMessage::Error(error) => {
                 self.error_message = Some(error);
@@ -598,7 +578,7 @@ impl ParamsApp {
     pub fn confirm_set_parameter(&mut self) {
         if let Some(edit_state) = &self.edit_state {
             // Send the value directly to ROS2 - let it handle validation and provide feedback
-            let _ = self.watch_sender.send(ParamWatchMessage::SetParam {
+            self.bridge.send(ParamWatchMessage::SetParam {
                 node_name: edit_state.node_name.clone(),
                 param_name: edit_state.param_name.clone(),
                 value: edit_state.new_value.clone(),
@@ -643,7 +623,7 @@ impl ParamsApp {
     pub fn confirm_dump_parameters(&mut self) {
         if let Some(node_name) = self.file_target_node.take() {
             if !self.file_input.is_empty() {
-                let _ = self.watch_sender.send(ParamWatchMessage::DumpParam {
+                self.bridge.send(ParamWatchMessage::DumpParam {
                     node_name,
                     file_path: self.file_input.clone(),
                 });
@@ -656,7 +636,7 @@ impl ParamsApp {
     pub fn confirm_load_parameters(&mut self) {
         if let Some(node_name) = self.file_target_node.take() {
             if !self.file_input.is_empty() {
-                let _ = self.watch_sender.send(ParamWatchMessage::LoadParam {
+                self.bridge.send(ParamWatchMessage::LoadParam {
                     node_name,
                     file_path: self.file_input.clone(),
                 });
@@ -736,7 +716,7 @@ impl ParamsApp {
 
     pub fn refresh_param_list(&mut self) {
         self.error_message = None;
-        let _ = self.watch_sender.send(ParamWatchMessage::RefreshList);
+        self.bridge.send(ParamWatchMessage::RefreshList);
     }
 
     pub fn clamp_selection(&mut self) {
@@ -759,8 +739,7 @@ impl ParamsApp {
     }
 
     pub fn shutdown(&mut self) {
-        // Send shutdown message to background threads
-        let _ = self.watch_sender.send(ParamWatchMessage::Shutdown);
+        self.bridge.shutdown();
     }
 
     // Cursor handling methods for better UX

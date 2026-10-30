@@ -5,6 +5,7 @@ use super::navsat::{self, NavSatFix};
 use super::occupancy;
 use super::pointcloud::{self, PointCloud};
 use super::ros::{MeasurementStatus, TopicInfo};
+use crate::common::ros_helper::{Helper, EVENT, RESTART_DELAY};
 use crossbeam::channel::Sender;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
@@ -13,18 +14,13 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 
 static SHARED_RUNTIME: Lazy<Arc<tokio::runtime::Runtime>> =
     Lazy::new(|| Arc::new(tokio::runtime::Runtime::new().expect("Failed to create tokio runtime")));
 
 /// The helper process all ROS access goes through, see the script.
 const ROS_BRIDGE_SCRIPT: &str = include_str!("ros_bridge.py");
-/// Delay before restarting the helper after it exited.
-const RESTART_DELAY: Duration = Duration::from_secs(2);
 /// How long shutdown waits for the helper to be killed.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -191,7 +187,6 @@ struct ListedTopic {
     subscribers: usize,
 }
 
-const EVENT: u8 = 0;
 const FRAME: u8 = 1;
 
 /// The viewer stream currently open.
@@ -372,83 +367,6 @@ fn view_command(view: &ActiveView) -> serde_json::Value {
     })
 }
 
-/// A running helper: its stdin for commands, and frames read from stdout.
-struct Helper {
-    _child: Child,
-    stdin: ChildStdin,
-    frames: mpsc::Receiver<(u8, Vec<u8>)>,
-    stderr: JoinHandle<String>,
-}
-
-impl Helper {
-    fn spawn() -> std::io::Result<Self> {
-        crate::debug_log("Starting the ROS bridge helper");
-        let mut child = Command::new("python3")
-            .arg("-c")
-            .arg(ROS_BRIDGE_SCRIPT)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()?;
-        let (Some(stdin), Some(mut stdout), Some(mut stderr)) =
-            (child.stdin.take(), child.stdout.take(), child.stderr.take())
-        else {
-            return Err(std::io::Error::other("helper pipes missing"));
-        };
-
-        // Reading frames in their own task keeps the supervisor's select
-        // cancel-safe; the channel closes when the helper exits.
-        let (frame_sender, frames) = mpsc::channel(64);
-        tokio::spawn(async move {
-            loop {
-                let mut header = [0u8; 5];
-                if stdout.read_exact(&mut header).await.is_err() {
-                    break;
-                }
-                let len = u32::from_le_bytes(header[..4].try_into().unwrap()) as usize;
-                let mut payload = vec![0u8; len];
-                if stdout.read_exact(&mut payload).await.is_err()
-                    || frame_sender.send((header[4], payload)).await.is_err()
-                {
-                    break;
-                }
-            }
-        });
-        let stderr = tokio::spawn(async move {
-            let mut text = String::new();
-            let _ = stderr.read_to_string(&mut text).await;
-            text
-        });
-        Ok(Self {
-            _child: child,
-            stdin,
-            frames,
-            stderr,
-        })
-    }
-
-    async fn send(&mut self, command: &serde_json::Value) -> std::io::Result<()> {
-        let mut line = command.to_string();
-        line.push('\n');
-        self.stdin.write_all(line.as_bytes()).await?;
-        self.stdin.flush().await
-    }
-
-    /// The last line the helper wrote to stderr, for error messages.
-    async fn exit_reason(self) -> String {
-        drop(self._child);
-        let stderr = self.stderr.await.unwrap_or_default();
-        stderr
-            .lines()
-            .rev()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("no output")
-            .trim()
-            .to_string()
-    }
-}
-
 /// Owns the helper: forwards the app's requests, turns the helper's output
 /// into `TopicMessage`s and restarts it, with its state, if it exits.
 pub struct RosBridgeHandle {
@@ -498,7 +416,7 @@ async fn supervise(
     let mut state = BridgeState::default();
     let mut first_start = true;
     loop {
-        match Helper::spawn() {
+        match Helper::spawn(ROS_BRIDGE_SCRIPT) {
             Ok(mut helper) => {
                 let mut replay = state.replay();
                 if first_start && !initial_fetch {

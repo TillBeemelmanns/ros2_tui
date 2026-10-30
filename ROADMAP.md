@@ -64,22 +64,17 @@ Next message types, ordered by how much they help check a robot over SSH:
 
 ## Robustness
 
-- [ ] **Configurable command timeout** — expose `ROS2_COMMAND_TIMEOUT` as a CLI
-  flag / env var; a fixed 10s is not ideal for every graph size.
-- [ ] **Dedicated `Timeout` error variant** — currently a timeout surfaces as a
-  generic `ParamError::Io`/`TopicError::Io`; a distinct variant gives clearer
-  in-UI messaging ("node X timed out") vs. real I/O failures.
+- [ ] **Configurable service timeout** — the params helper gives a node 5 s
+  to answer a parameter request; expose it as a CLI flag / env var for very
+  large or slow graphs.
 - [ ] **Detect a hung helper** — a helper that exits is restarted, but one
   that hangs (e.g. blocked in a callback) is not noticed; a heartbeat event
   would let the app restart it too.
-- [ ] **Graceful mid-session loss of `ros2`** — `params` only checks
-  `ros2 --help` at startup; handle the CLI/daemon disappearing while running.
 
 ## Architecture
 
-- [ ] **Params app through the helper too** — `params` still runs a `ros2
-  param` process per list, dump, get and set; serving those from the same
-  kind of helper would speed up refreshes on large graphs.
+- ✅ **Params app through the helper too** — `params` calls the parameter
+  services from its own `rclpy` helper; neither app runs the `ros2` CLI.
 - [ ] **Optional Python-free transport** — receive the serialized messages
   directly with a pure-Rust DDS implementation (e.g. RustDDS) and a Zenoh
   client for `rmw_zenoh`. The Rust side already decodes CDR, so this would
