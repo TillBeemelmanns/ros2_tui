@@ -138,6 +138,28 @@ impl<'a> CdrReader<'a> {
             .collect())
     }
 
+    pub fn f64_sequence(&mut self) -> Result<Vec<f64>, CdrError> {
+        let len = self.sequence_len(8)?;
+        (0..len).map(|_| self.f64()).collect()
+    }
+
+    pub fn string_sequence(&mut self) -> Result<Vec<String>, CdrError> {
+        let len = self.sequence_len(4)?;
+        (0..len).map(|_| self.string()).collect()
+    }
+
+    /// Length of a sequence whose elements take at least `min_size` bytes,
+    /// checked against the bytes left so a corrupt length cannot make us
+    /// allocate wildly.
+    pub fn sequence_len(&mut self, min_size: usize) -> Result<usize, CdrError> {
+        let len = self.u32()? as usize;
+        let left = self.body.len().saturating_sub(self.pos);
+        if len.saturating_mul(min_size) > left {
+            return Err(CdrError::Truncated);
+        }
+        Ok(len)
+    }
+
     pub fn string(&mut self) -> Result<String, CdrError> {
         let len = self.u32()? as usize;
         let bytes = self.take(len)?;
@@ -209,6 +231,18 @@ impl CdrWriter {
         self.u32(s.len() as u32 + 1);
         self.0.extend_from_slice(s.as_bytes());
         self.0.push(0);
+    }
+    pub fn f64_sequence(&mut self, values: &[f64]) {
+        self.u32(values.len() as u32);
+        for v in values {
+            self.f64(*v);
+        }
+    }
+    pub fn string_sequence(&mut self, values: &[&str]) {
+        self.u32(values.len() as u32);
+        for v in values {
+            self.string(v);
+        }
     }
     pub fn bytes(&mut self, b: &[u8]) {
         self.u32(b.len() as u32);

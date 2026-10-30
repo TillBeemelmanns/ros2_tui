@@ -72,6 +72,8 @@ The container starts the `ros2_tui_test` dummy publishers automatically, so both
 | `lidar_publisher` | `/test/lidar/points` (simulated 32-beam lidar with a dead ring), `/test/scan` (270° LaserScan), `/test/points_rgb` (colored cloud) |
 | `nav_publisher` | `/test/map` (latched), `/test/costmap`, `/test/gps/fix`, `/test/imu` (100 Hz) |
 | `diagnostics_publisher` | `/diagnostics` from several simulated drivers, one of which keeps going stale |
+| `robot_publisher` | `/tf` and `/tf_static` of a robot driving a circle (a wheel frame goes stale and `base_link` gets a second parent now and then), `/test/odom`, `/test/plan`, `/test/joint_states`, `/test/battery` |
+| `dummy_publisher` | `/test/sine_wave` and other jittery topics for the Hz/delay charts |
 | `multi_publisher` | Many automotive-style topics with varying rates for the Hz/delay monitoring |
 
 ## Topics TUI (`topics`)
@@ -86,6 +88,8 @@ The container starts the `ros2_tui_test` dummy publishers automatically, so both
 - 🗺️ Map viewer for `nav_msgs/OccupancyGrid` maps and costmaps, including latched maps
 - 📡 GNSS viewer for `sensor_msgs/NavSatFix` (fix status, accuracy, track) and IMU viewer for `sensor_msgs/Imu` (orientation, gravity check, live plots)
 - 🩺 Diagnostics viewer for `diagnostic_msgs/DiagnosticArray` (`/diagnostics`): every driver's status in one table, worst first, with stale detection
+- 🌳 TF tree viewer for `/tf` and `/tf_static`: every frame with rate, age and delay, and the problems that break transforms: stale frames, frames with two parents, cycles and disconnected trees
+- 🚗 Odometry, path, joint state and battery viewers: trail with jump detection, planned paths, joint tables with plots, charge with cell balance
 
 ### Usage
 ```bash
@@ -103,7 +107,7 @@ Toggling a row with `Enter` starts Hz/Delay measurement. Unwatched topics stay l
 - `Enter` toggles watching on the focused topic or expands/collapses a group
 - `d` opens the detail view, where `Tab` switches between the info and echo panes; `c` collapses/expands all groups at once
 - `s` toggles simulation time when measuring delay metrics
-- `v` opens the viewer on a topic marked `◉` in the `V` column (images, maps, point clouds, laser scans, GNSS, IMU, diagnostics), from the list or the detail view; `+`/`-` change the frame rate limit (1–30 fps, default 10), `p` pauses, `q`/`Esc` go back
+- `v` opens the viewer on a topic marked `◉` in the `V` column (images, maps, point clouds, laser scans, GNSS, IMU, diagnostics, TF, odometry, paths, joint states, batteries), from the list or the detail view; `+`/`-` change the frame rate limit (1–30 fps, default 10), `p` pauses, `q`/`Esc` go back
 - `F4` opens live search with auto-expansion; `Space`, `r`, or `F5` refresh immediately
 - `q`, `Esc`, or `Ctrl+C` quit; `--verbose` writes detailed logs to `topics_debug.log`
 
@@ -126,6 +130,11 @@ Press `v` on a topic marked `◉` to see its data. Common keys in every viewer: 
 | `sensor_msgs/NavSatFix` | GNSS | Fix status, satellites, position, accuracy and a track |
 | `sensor_msgs/Imu` | IMU | Orientation, turn rate, acceleration, a gravity check and plots |
 | `diagnostic_msgs/DiagnosticArray` | Diagnostics | Every driver's status, worst first, with stale detection |
+| `tf2_msgs/TFMessage` (`/tf`, `/tf_static`) | TF tree | Frames as a tree with rate, age, delay and pose; stale frames, two parents, cycles |
+| `nav_msgs/Odometry` | Odometry | Pose, speed, distance, jumps, covariance, a trail and velocity plots |
+| `nav_msgs/Path` | Path | The path with start and end, length and pose count |
+| `sensor_msgs/JointState` | Joint states | Position, velocity and effort of every joint, the range seen, plots of the selected joint |
+| `sensor_msgs/BatteryState` | Battery | Charge, time left, voltage, current, health, cell balance and plots |
 
 ### Image Viewer
 - Supported encodings: `rgb8`, `bgr8`, `rgba8`, `bgra8`, `mono8`, `mono16`, 16-bit color, `yuv422`/`uyvy`, `yuv422_yuy2`/`yuyv`, `bayer_*8`, and depth (`16UC1`, `32FC1`) shown with a turbo colormap. Compressed images: JPEG, PNG and `compressedDepth`.
@@ -162,6 +171,27 @@ Press `v` on a topic marked `◉` to see its data. Common keys in every viewer: 
 - A status not updated for 5 seconds turns STALE, which catches drivers that died without saying so.
 - `↑`/`↓` or `j`/`k` select a status and show its key/value pairs below the table; `f` shows only problems.
 - Diagnostics are never rate limited, so no driver's array is dropped.
+
+### TF Tree Viewer
+- Opening `/tf` or `/tf_static` subscribes to both and shows every frame as a tree from its root, with static or dynamic, update rate, time since the last update, stamp delay, and the transform to its parent.
+- Problems are marked per frame: a dynamic frame without an update for 5 of its periods (at least 1 s) is stale; a frame published with two parents means two broadcasters disagree; frames that are their own ancestor are in a cycle. The info line counts frames, trees (more than one means a missing link) and problems.
+- `↑`/`↓` or `j`/`k` select a frame: below the tree are its chain to the root and its pose in the root frame.
+- TF is never rate limited, so no broadcaster's transforms are dropped.
+
+### Odometry and Path Viewers
+- `Odometry` topics show the frames, position, heading, speed, turn rate, the distance travelled and the pose standard deviations, beside a trail with the current heading. A step longer than the reported speed explains counts as a jump, e.g. a reset. Plots show the linear and angular velocity of the last 10 seconds.
+- `Path` topics draw the path in its frame, start green and end red, with its length and pose count.
+
+### Joint State Viewer
+- Joints from all `JointState` messages are merged by name, as arm and gripper often publish separately: position (rad and degrees), velocity, effort and age, and a bar showing where the position lies in the range seen so far.
+- Stale joints are grayed out, NaN values highlighted, and messages whose arrays do not match their names reported.
+- `↑`/`↓` or `j`/`k` select a joint to plot its position and velocity.
+- Joint states are never rate limited, so no source's partial message is dropped.
+
+### Battery Viewer
+- `BatteryState` topics show the charge with time left at the present current, voltage, current and power, capacity, temperature, health, technology and location; values the battery does not measure (NaN) say so.
+- Cell voltages are shown as bars with their spread; the weakest cell is highlighted when the spread exceeds 50 mV.
+- Plots show voltage and current of the last 10 minutes.
 
 ### Using It over SSH
 - Images, maps and point clouds use the kitty graphics protocol when the terminal supports it (Ghostty, kitty, WezTerm). It works over SSH: frames are compressed, capped at 960x720 pixels and scaled up by the terminal, which keeps typical streams at a few MB/s.

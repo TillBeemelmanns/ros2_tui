@@ -115,7 +115,8 @@ impl ParamsApp {
     pub fn handle_message(&mut self, msg: ParamMessage) {
         match msg {
             ParamMessage::ParamList(params) => {
-                self.error_message = None;
+                // Errors stay until they expire: a refresh every few seconds
+                // would otherwise hide a failed set before it is read.
 
                 // Replace the map so updated values show up and parameters of
                 // nodes that have gone away disappear. Keep a known value only

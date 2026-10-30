@@ -9,6 +9,13 @@ See [CHANGELOG.md](CHANGELOG.md) for what has already shipped.
 - ✅ **One long-lived `rclpy` helper for all ROS access** — replaces the
   `ros2 topic list`/`hz`/`delay`/`echo` processes and the per-viewer helper;
   restarts itself with its state if it exits (unreleased).
+- ✅ **TF, odometry, path, joint state and battery viewers** — the TF tree
+  from `/tf` and `/tf_static` with rates, ages and stale frames, frames with
+  two parents and cycles; odometry with trail, jumps and velocity plots;
+  paths; merged joint tables with plots; battery charge, cells and plots
+  (unreleased).
+- ✅ **Params app through an `rclpy` helper** — neither app runs the `ros2`
+  CLI any more (unreleased).
 - ✅ **Sensor viewers** — `v` opens a viewer for images, compressed images,
   maps and costmaps, point clouds, laser scans, GNSS fixes, IMUs and
   diagnostics, with kitty graphics over SSH and text fallbacks (unreleased).
@@ -34,29 +41,33 @@ See [CHANGELOG.md](CHANGELOG.md) for what has already shipped.
 
 Next message types, ordered by how much they help check a robot over SSH:
 
-- [ ] **TF tree** (`/tf`, `/tf_static`) — frames as a tree with parent,
-  publish rate, age and stale/missing links; the most common cause of "the
-  sensor works but nothing shows up in RViz".
-- [ ] **Odometry, Path and PoseStamped** — trajectory and current pose in the
-  point cloud viewer's top view, with speed and covariance readouts; plus
-  `Twist`/`TwistStamped` (`cmd_vel`) as linear/angular velocity plots.
-- [ ] **JointState** — a table of positions, velocities and efforts with bars,
-  to spot a stuck or noisy joint.
-- [ ] **BatteryState** — charge, voltage, current, temperature and health.
+- [ ] **Plot any numeric field** — pick fields of any message and plot them,
+  like rqt_plot (e.g. `/cmd_vel.linear.x`). The most generic next viewer:
+  needs a decoder driven by the message definition, which the helper can
+  read from the type support, and would also enable full echo with arrays.
+- [ ] **PoseStamped and Twist/TwistStamped (`cmd_vel`)** — pose readout and
+  linear/angular velocity plots, reusing the odometry viewer.
+- [ ] **TF: more checks** — the transform between any two selected frames,
+  frames that sensor topics use but TF lacks, and the broadcasting node of
+  each frame.
 - [ ] **Scalar sensors** — `Range`, `Temperature`, `FluidPressure`,
   `Illuminance`, `MagneticField`, `RelativeHumidity` as a value with a plot.
-- [ ] **Plot any numeric field** — pick fields of any message and plot them,
-  like rqt_plot. Needs a generic decoder driven by the message definition
-  (`ros2 interface show`), which would also enable full echo with arrays.
 - [ ] **CameraInfo next to its image** — intrinsics and distortion, and a
   warning when the size does not match the image.
 - [ ] **MarkerArray** in the point cloud viewer.
 - [ ] **Fixed frame for point clouds** — transform clouds and scans into a
   frame such as `base_link` via TF instead of showing the sensor frame.
-- [ ] **Screenshots of the viewers** in the README.
+- [ ] **Screenshots and a terminal recording** (asciinema/GIF) of the
+  viewers in the README.
 
 ## Planned features
 
+- [ ] **One `ros2_tui` binary with tabs** — topics, params and later
+  services, actions and TF as tabs of one app, sharing the terminal setup
+  and the event loop that `topics` and `params` duplicate today; the
+  existing binaries stay as shortcuts to their tab.
+- [ ] **Release 0.2.0** — leaving the `ros2` CLI behind and the viewers are a
+  milestone worth a minor version, with the recording above.
 - [ ] **Services app** — browse/list/call ROS2 services (mirrors the topics/params TUIs).
 - [ ] **Actions app** — browse/send/monitor ROS2 actions.
 - [ ] **Config file & theme support** — persist refresh rates, timeout, and color
@@ -69,7 +80,8 @@ Next message types, ordered by how much they help check a robot over SSH:
   large or slow graphs.
 - [ ] **Detect a hung helper** — a helper that exits is restarted, but one
   that hangs (e.g. blocked in a callback) is not noticed; a heartbeat event
-  would let the app restart it too.
+  every second, and a restart after a few missed ones, would cover it for
+  both apps.
 
 ## Architecture
 
@@ -99,15 +111,19 @@ Next message types, ordered by how much they help check a robot over SSH:
   Docker image so the real `ros2` integration path is exercised on every PR.
 - [ ] **Topic-side live integration tests** — start the ROS helper against the
   dummy publishers and check its topic list, rates, delays and echo.
-- [ ] **Viewer end-to-end tests in CI** — drive the `topics` binary in a
-  pseudo terminal against the test publishers, answering the terminal queries
-  like a kitty-capable terminal, and check the decoded frames and info lines
-  for every viewer on each distribution.
+- [ ] **Viewer end-to-end tests in CI** (next up) — drive the `topics` and
+  `params` binaries in a pseudo terminal against the test publishers (pyte as
+  the terminal emulator), answering the terminal queries like a
+  kitty-capable terminal, and check the decoded frames, info lines, helper
+  recovery and parameter set/dump/load on each distribution. The drivers
+  used during development only need moving into `tests/e2e/` and a step in
+  the Docker job.
 - [ ] **Code coverage reporting** — add `cargo llvm-cov` (or similar) to CI.
 
 ## Maintainability
 
-- [ ] **Shared TUI harness to cut topics/params duplication** — both have
+- [ ] **Shared TUI harness to cut topics/params duplication** (a first step
+  towards the tabbed binary above) — both have
   near-identical `main()`/`run_app()` event loops (terminal setup, the
   `where io::Error: From<B::Error>` draw loop, key dispatch scaffolding) and
   parallel `app/ros/ui/watcher` modules. Factor the common scaffolding into

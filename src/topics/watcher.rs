@@ -1,10 +1,14 @@
+use super::battery::{self, BatteryState};
 use super::diagnostics::{self, DiagnosticStatus};
 use super::image::{self, DecodedImage};
 use super::imu::{self, ImuSample};
+use super::joints::{self, JointStates};
 use super::navsat::{self, NavSatFix};
 use super::occupancy;
+use super::odometry::{self, Odometry, Path};
 use super::pointcloud::{self, PointCloud};
 use super::ros::{MeasurementStatus, TopicInfo};
+use super::tf::{self, Transform};
 use crate::common::ros_helper::{Helper, EVENT, RESTART_DELAY};
 use crossbeam::channel::Sender;
 use once_cell::sync::Lazy;
@@ -62,15 +66,49 @@ pub enum FrameContent {
     Diagnostics(Vec<DiagnosticStatus>),
     Gnss(NavSatFix),
     Imu(ImuSample),
+    Tf {
+        transforms: Vec<Transform>,
+        is_static: bool,
+    },
+    Odometry(Box<Odometry>),
+    Path(Path),
+    Joints(JointStates),
+    Battery(BatteryState),
 }
 
-/// Decode a serialized message of `msg_type` for display.
+/// Decode a serialized message of `msg_type`, received on `topic`, for
+/// display.
 fn decode_frame(
     msg_type: &str,
+    topic: &str,
     payload: &[u8],
     target: (u32, u32),
 ) -> Result<FrameContent, String> {
-    if pointcloud::is_pointcloud_type(msg_type) {
+    let err = |e: super::cdr::CdrError| e.to_string();
+    if tf::is_tf_type(msg_type) {
+        tf::decode_message(payload)
+            .map(|transforms| FrameContent::Tf {
+                transforms,
+                is_static: topic.ends_with("tf_static"),
+            })
+            .map_err(err)
+    } else if odometry::is_odometry_type(msg_type) {
+        odometry::decode_odometry(payload)
+            .map(|odom| FrameContent::Odometry(Box::new(odom)))
+            .map_err(err)
+    } else if odometry::is_path_type(msg_type) {
+        odometry::decode_path(payload)
+            .map(FrameContent::Path)
+            .map_err(err)
+    } else if joints::is_joint_state_type(msg_type) {
+        joints::decode_message(payload)
+            .map(FrameContent::Joints)
+            .map_err(err)
+    } else if battery::is_battery_state_type(msg_type) {
+        battery::decode_message(payload)
+            .map(FrameContent::Battery)
+            .map_err(err)
+    } else if pointcloud::is_pointcloud_type(msg_type) {
         pointcloud::decode_message(payload, MAX_CLOUD_POINTS)
             .map(FrameContent::Cloud)
             .map_err(|e| e.to_string())
@@ -133,6 +171,9 @@ pub enum WatchMessage {
     StopEcho,
     StartViewStream {
         topic_name: String,
+        /// More topics of the same type to show in the view, like
+        /// `/tf_static` beside `/tf`.
+        extra_topics: Vec<String>,
         msg_type: String,
         max_fps: u32,
         target: Arc<ViewTarget>,
@@ -193,6 +234,7 @@ const FRAME: u8 = 1;
 struct ActiveView {
     id: u32,
     topic: String,
+    extra_topics: Vec<String>,
     msg_type: String,
     fps: u32,
     target: Arc<ViewTarget>,
@@ -230,6 +272,7 @@ impl BridgeState {
             }
             WatchMessage::StartViewStream {
                 topic_name,
+                extra_topics,
                 msg_type,
                 max_fps,
                 target,
@@ -239,6 +282,7 @@ impl BridgeState {
                 let view = ActiveView {
                     id: self.next_view_id,
                     topic: topic_name,
+                    extra_topics,
                     msg_type,
                     fps: max_fps,
                     target,
@@ -361,7 +405,9 @@ fn view_command(view: &ActiveView) -> serde_json::Value {
     json!({
         "cmd": "view",
         "id": view.id,
-        "topic": view.topic,
+        "topics": std::iter::once(&view.topic)
+            .chain(&view.extra_topics)
+            .collect::<Vec<_>>(),
         "type": view.msg_type,
         "fps": view.fps,
     })
@@ -518,16 +564,25 @@ async fn handle_frame(state: &BridgeState, kind: u8, payload: Vec<u8>) -> Vec<To
                 vec![]
             }
         },
-        FRAME if payload.len() >= 8 => {
+        FRAME if payload.len() >= 9 => {
             let id = u32::from_le_bytes(payload[..4].try_into().unwrap());
             let received_count = u32::from_le_bytes(payload[4..8].try_into().unwrap());
             let Some(view) = state.view.as_ref().filter(|v| v.id == id) else {
                 return vec![];
             };
+            let topic = match payload[8] {
+                0 => view.topic.clone(),
+                i => view
+                    .extra_topics
+                    .get(i as usize - 1)
+                    .cloned()
+                    .unwrap_or_default(),
+            };
             let (msg_type, size) = (view.msg_type.clone(), view.target.get());
-            let decoded =
-                tokio::task::spawn_blocking(move || decode_frame(&msg_type, &payload[8..], size))
-                    .await;
+            let decoded = tokio::task::spawn_blocking(move || {
+                decode_frame(&msg_type, &topic, &payload[9..], size)
+            })
+            .await;
             match decoded {
                 Ok(Ok(content)) => vec![TopicMessage::ViewFrame(Box::new(ViewFrame {
                     topic_name: view.topic.clone(),
@@ -584,6 +639,7 @@ mod tests {
         state.apply(WatchMessage::StartEcho("/b".into()));
         state.apply(WatchMessage::StartViewStream {
             topic_name: "/cam".into(),
+            extra_topics: vec![],
             msg_type: "sensor_msgs/msg/Image".into(),
             max_fps: 10,
             target: Arc::new(ViewTarget::default()),
@@ -596,7 +652,7 @@ mod tests {
                 r#"{"cmd":"list"}"#,
                 r#"{"cmd":"watch","topic":"/b"}"#,
                 r#"{"cmd":"echo","topic":"/b"}"#,
-                r#"{"cmd":"view","fps":5,"id":1,"topic":"/cam","type":"sensor_msgs/msg/Image"}"#,
+                r#"{"cmd":"view","fps":5,"id":1,"topics":["/cam"],"type":"sensor_msgs/msg/Image"}"#,
             ]
         );
     }
@@ -606,6 +662,7 @@ mod tests {
         let mut state = BridgeState::default();
         let view = |topic: &str| WatchMessage::StartViewStream {
             topic_name: topic.into(),
+            extra_topics: vec![],
             msg_type: "sensor_msgs/msg/Imu".into(),
             max_fps: 30,
             target: Arc::new(ViewTarget::default()),
@@ -621,6 +678,7 @@ mod tests {
         let mut state = BridgeState::default();
         state.apply(WatchMessage::StartViewStream {
             topic_name: "/cam".into(),
+            extra_topics: vec![],
             msg_type: "sensor_msgs/msg/Image".into(),
             max_fps: 10,
             target: Arc::new(ViewTarget::default()),

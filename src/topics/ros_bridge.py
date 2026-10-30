@@ -8,15 +8,15 @@ Run as `python3 -c <this file>`. Commands arrive on stdin as JSON lines:
     {"cmd": "watch", "topic": T} / {"cmd": "unwatch", "topic": T}
                                                       rate and delay of T
     {"cmd": "echo", "topic": T} / {"cmd": "unecho"}   messages of T as YAML
-    {"cmd": "view", "id": N, "topic": T, "type": M, "fps": F}
+    {"cmd": "view", "id": N, "topics": [T, ...], "type": M, "fps": F}
     {"cmd": "fps", "id": N, "fps": F} / {"cmd": "unview", "id": N}
                                                       serialized messages
     {"cmd": "sim_time", "enabled": B}                 clock for delays
 
 Output on stdout is frames of a little-endian u32 length, a u8 kind and the
 payload. Kind 0 is a JSON event; kind 1 a viewer message: u32 view id, u32
-count of messages received so far (to measure the rate despite throttling)
-and the CDR payload. stdin closing means the parent is gone.
+count of messages received so far (to measure the rate despite throttling),
+u8 index of its topic in the view's topics and the CDR payload. stdin closing means the parent is gone.
 """
 
 import json
@@ -176,19 +176,26 @@ def std_dev(values, mean):
 
 
 class View:
-    """Serialized messages for a viewer, throttled to its frame rate limit."""
+    """Serialized messages for a viewer, throttled to its frame rate limit.
 
-    def __init__(self, bridge, view_id, topic, type_name, fps):
+    A view may have several topics of one type, like /tf and /tf_static.
+    """
+
+    def __init__(self, bridge, view_id, topics, type_name, fps):
         self.view_id = view_id
         self.count = 0
         self.next = 0.0
         self.set_fps(fps)
-        self.subscription = Subscription(bridge, topic, type_name, self.on_message, raw=True)
+        self.subscriptions = [
+            Subscription(bridge, topic, type_name,
+                         lambda payload, index=index: self.on_message(index, payload), raw=True)
+            for index, topic in enumerate(topics)
+        ]
 
     def set_fps(self, fps):
         self.interval = 1.0 / max(float(fps), 0.1)
 
-    def on_message(self, payload):
+    def on_message(self, index, payload):
         self.count += 1
         now = time.monotonic()
         if now < self.next:
@@ -196,7 +203,8 @@ class View:
         # Advance on a fixed schedule rather than from `now`, so publisher
         # jitter does not drop every other message of a topic at the limit.
         self.next = max(self.next, now - self.interval) + self.interval
-        send(FRAME, struct.pack("<II", self.view_id, self.count & 0xFFFFFFFF) + bytes(payload))
+        send(FRAME, struct.pack("<IIB", self.view_id, self.count & 0xFFFFFFFF, index)
+             + bytes(payload))
 
 
 class Echo:
@@ -237,7 +245,7 @@ class Bridge:
 
     def subscriptions(self):
         subs = [w.subscription for w in self.watches.values()]
-        subs += [v.subscription for v in self.views.values()]
+        subs += [sub for v in self.views.values() for sub in v.subscriptions]
         if self.echo is not None:
             subs.append(self.echo.subscription)
         return subs
@@ -278,7 +286,7 @@ class Bridge:
             self.stop_echo()
         elif cmd == "view":
             self.stop_view(c["id"])
-            self.views[c["id"]] = View(self, c["id"], c["topic"], c["type"], c["fps"])
+            self.views[c["id"]] = View(self, c["id"], c["topics"], c["type"], c["fps"])
         elif cmd == "fps":
             if c["id"] in self.views:
                 self.views[c["id"]].set_fps(c["fps"])
@@ -298,7 +306,8 @@ class Bridge:
     def stop_view(self, view_id):
         view = self.views.pop(view_id, None)
         if view is not None:
-            view.subscription.destroy()
+            for sub in view.subscriptions:
+                sub.destroy()
 
     def request_list(self):
         """List the topics, once discovery had time to settle."""

@@ -91,3 +91,19 @@ fn test_selection_survives_refresh_adding_rows_above() {
 
     assert_eq!(app.visible_items[app.selected_index].node.full_path, "/m");
 }
+
+#[test]
+fn test_refresh_keeps_a_set_error() {
+    let mut app = app();
+    app.handle_message(ParamMessage::ParamList(vec![param("/n", "rate", "1")]));
+    app.handle_message(ParamMessage::ParamSetError {
+        node_name: "/n".to_string(),
+        param_name: "rate".to_string(),
+        error: "Setting parameter failed: wrong type".to_string(),
+    });
+    app.handle_message(ParamMessage::ParamList(vec![param("/n", "rate", "1")]));
+    assert!(app
+        .error_message
+        .as_deref()
+        .is_some_and(|e| e.contains("wrong type")));
+}

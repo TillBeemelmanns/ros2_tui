@@ -179,8 +179,12 @@ class Bridge:
             return self.clients[key]
 
     def wait_ready(self, clients):
-        """Wait until the clients' services are discovered; the ready ones."""
-        deadline = time.monotonic() + DISCOVERY_TIMEOUT
+        """Wait until the clients' services are discovered; the ready ones.
+
+        Right after the start, discovery may still be going on, so requests
+        then wait until STARTUP_TIME has passed as well.
+        """
+        deadline = max(time.monotonic() + DISCOVERY_TIMEOUT, self.started + STARTUP_TIME)
         while True:
             ready = [c for c in clients if c.service_is_ready()]
             if len(ready) == len(clients) or time.monotonic() > deadline:

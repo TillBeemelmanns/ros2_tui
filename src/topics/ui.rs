@@ -11,15 +11,19 @@ use ratatui::{
 };
 
 use super::app::{
-    has_viewer, App, AppMode, CloudView, DetailPaneFocus, DiagnosticsView, GnssView, ImuPoint,
-    ImuView, TopicView, ViewContent, CHARTS_MAX_DATA_POINTS, IMU_HISTORY,
+    has_viewer, App, AppMode, BatteryView, CloudView, DetailPaneFocus, DiagnosticsView, GnssView,
+    ImuPoint, ImuView, JointsView, OdometryView, PathView, TfView, TopicView, ViewContent,
+    BATTERY_HISTORY, CHARTS_MAX_DATA_POINTS, IMU_HISTORY,
 };
+use super::battery::measured;
 use super::cloud_render::{grid_step, ColorMode};
 use super::diagnostics::Level;
 use super::imu;
+use super::joints::JOINT_STALE_AFTER;
 use super::pointcloud::PointCloud;
 use super::ros;
 use super::ros::MeasurementStatus;
+use super::tf::Issue;
 use crate::common::graphics::{Braille, GraphicsProtocol, Halfblocks};
 use crate::common::{TopicTree, TopicTreeItem};
 
@@ -100,6 +104,12 @@ fn render_help(f: &mut Frame) {
         Line::from("    f           - Show only problems (WARN, ERROR, STALE)"),
         Line::from(""),
         Line::from(Span::styled(
+            "  TF and Joint State Viewers",
+            Style::default().add_modifier(Modifier::UNDERLINED),
+        )),
+        Line::from("    ↑↓ / jk     - Select a frame or joint to see its details"),
+        Line::from(""),
+        Line::from(Span::styled(
             "  General",
             Style::default().add_modifier(Modifier::UNDERLINED),
         )),
@@ -152,13 +162,15 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         let mut keys = vec![];
         let content = app.view.as_ref().map(|v| &v.content);
         let diagnostics = matches!(content, Some(ViewContent::Diagnostics(_)));
+        let selectable = matches!(
+            content,
+            Some(ViewContent::Diagnostics(_) | ViewContent::Tf(_) | ViewContent::Joints(_))
+        );
+        if selectable {
+            keys.extend([Span::styled("↑↓/jk", bold), Span::raw(": Select | ")]);
+        }
         if diagnostics {
-            keys.extend([
-                Span::styled("↑↓/jk", bold),
-                Span::raw(": Select | "),
-                Span::styled("f", bold),
-                Span::raw(": Problems Only | "),
-            ]);
+            keys.extend([Span::styled("f", bold), Span::raw(": Problems Only | ")]);
         }
         if matches!(content, Some(ViewContent::Cloud(_))) {
             keys.extend([
@@ -178,7 +190,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 Span::raw(": Reset | "),
             ]);
         }
-        if !diagnostics {
+        if !content.is_some_and(ViewContent::is_unthrottled) {
             keys.extend([
                 Span::styled("+/-", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(": Max FPS | "),
@@ -324,6 +336,36 @@ fn render_view(f: &mut Frame, app: &App) {
             }
             None
         }
+        ViewContent::Tf(tf_view) => {
+            if !tf_view.tree.is_empty() {
+                render_tf(f, tf_view, content_area);
+            }
+            None
+        }
+        ViewContent::Odometry(odom) => {
+            if odom.latest.is_some() {
+                render_odometry(f, app, odom, content_area);
+            }
+            None
+        }
+        ViewContent::Path(path) => {
+            if path.latest.is_some() {
+                render_path(f, app, path, content_area);
+            }
+            None
+        }
+        ViewContent::Joints(joints) => {
+            if !joints.table.is_empty() {
+                render_joints(f, joints, content_area);
+            }
+            None
+        }
+        ViewContent::Battery(battery) => {
+            if battery.latest.is_some() {
+                render_battery(f, battery, content_area);
+            }
+            None
+        }
     };
     view.placement.set(shown);
 
@@ -359,6 +401,11 @@ fn view_has_content(view: &TopicView) -> bool {
         ViewContent::Diagnostics(diag) => !diag.table.is_empty(),
         ViewContent::Gnss(gnss) => gnss.latest.is_some(),
         ViewContent::Imu(imu_view) => imu_view.latest.is_some(),
+        ViewContent::Tf(tf_view) => !tf_view.tree.is_empty(),
+        ViewContent::Odometry(odom) => odom.latest.is_some(),
+        ViewContent::Path(path) => path.latest.is_some(),
+        ViewContent::Joints(joints) => !joints.table.is_empty(),
+        ViewContent::Battery(battery) => battery.latest.is_some(),
     }
 }
 
@@ -616,9 +663,30 @@ fn render_xyz_chart(
     axes: &[Vec<(f64, f64)>; 3],
     area: ratatui::layout::Rect,
 ) {
-    let (mut lo, mut hi) = axes
+    let series = [
+        ("x", Color::Red, axes[0].as_slice()),
+        ("y", Color::Green, axes[1].as_slice()),
+        ("z", Color::LightBlue, axes[2].as_slice()),
+    ];
+    render_series_chart(f, title, &series, IMU_HISTORY, area);
+}
+
+/// A named, colored series of (seconds before now, value).
+type Series<'a> = (&'a str, Color, &'a [(f64, f64)]);
+
+/// Plot named series of (seconds before now, value) over the last `span`,
+/// the y axis fitted to the data.
+fn render_series_chart(
+    f: &mut Frame,
+    title: &str,
+    series: &[Series],
+    span: std::time::Duration,
+    area: ratatui::layout::Rect,
+) {
+    let (mut lo, mut hi) = series
         .iter()
-        .flatten()
+        .flat_map(|(_, _, data)| data.iter())
+        .filter(|(_, v)| v.is_finite())
         .fold((f64::MAX, f64::MIN), |(lo, hi), (_, v)| {
             (lo.min(*v), hi.max(*v))
         });
@@ -627,27 +695,29 @@ fn render_xyz_chart(
     }
     let pad = ((hi - lo) * 0.1).max(0.05);
     let (lo, hi) = (lo - pad, hi + pad);
-    let colors = [Color::Red, Color::Green, Color::LightBlue];
-    let datasets = ["x", "y", "z"]
-        .into_iter()
-        .zip(axes)
-        .zip(colors)
-        .map(|((name, data), color)| {
+    let datasets = series
+        .iter()
+        .map(|(name, color, data)| {
             Dataset::default()
-                .name(name)
+                .name(*name)
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
-                .style(Style::default().fg(color))
+                .style(Style::default().fg(*color))
                 .data(data)
         })
         .collect();
-    let span = IMU_HISTORY.as_secs_f64();
+    let seconds = span.as_secs_f64();
+    let span_label = if seconds >= 120.0 {
+        format!("-{:.0}m", seconds / 60.0)
+    } else {
+        format!("-{:.0}s", seconds)
+    };
     let chart = Chart::new(datasets)
         .block(create_block(title))
         .x_axis(
             Axis::default()
-                .bounds([-span, 0.0])
-                .labels([format!("-{:.0}s", span), "now".to_string()]),
+                .bounds([-seconds, 0.0])
+                .labels([span_label, "now".to_string()]),
         )
         .y_axis(
             Axis::default()
@@ -823,6 +893,47 @@ fn view_info_lines<'a>(app: &App, view: &'a TopicView) -> Vec<Line<'a>> {
                 ));
             }
         }
+        ViewContent::Tf(tf_view) if !tf_view.tree.is_empty() => {
+            let now = std::time::Instant::now();
+            let tree = &tf_view.tree;
+            let statics = tree.frames.values().filter(|e| e.is_static).count();
+            let rows = tree.rows(now);
+            let problems = rows.iter().filter(|r| !r.issues.is_empty()).count();
+            let trees = tree.roots().len();
+            spans.extend([
+                Span::styled("Frames ", label),
+                Span::raw(format!(
+                    "{} ({} static, {} dynamic)",
+                    tree.frames.len(),
+                    statics,
+                    tree.frames.len() - statics
+                )),
+                Span::styled("  Trees ", label),
+                Span::styled(
+                    trees.to_string(),
+                    if trees > 1 {
+                        Style::default().fg(Color::Yellow)
+                    } else {
+                        Style::default()
+                    },
+                ),
+                Span::styled("  Problems ", label),
+                Span::styled(
+                    problems.to_string(),
+                    if problems > 0 {
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Green)
+                    },
+                ),
+            ]);
+        }
+        ViewContent::Joints(joints) if !joints.table.is_empty() => {
+            spans.extend([
+                Span::styled("Joints ", label),
+                Span::raw(joints.table.joints.len().to_string()),
+            ]);
+        }
         _ => {
             spans.push(Span::styled("Type ", label));
             spans.push(Span::raw(view.msg_type.as_str()));
@@ -834,14 +945,14 @@ fn view_info_lines<'a>(app: &App, view: &'a TopicView) -> Vec<Line<'a>> {
         Span::styled("  Topic ", label),
         Span::raw(format!("{} Hz", rate(view.topic_hz))),
     ]);
-    // Diagnostics are never throttled, so there is no display rate to show.
-    if !matches!(view.content, ViewContent::Diagnostics(_)) {
+    // Unthrottled views have no display rate to show.
+    if !view.content.is_unthrottled() {
         spans.extend([
             Span::styled("  Display ", label),
             Span::raw(format!("{} / {} fps", rate(view.display_fps), view.max_fps)),
         ]);
     }
-    let graphical = !matches!(view.content, ViewContent::Diagnostics(_));
+    let graphical = matches!(view.content, ViewContent::Image(_) | ViewContent::Cloud(_));
     if graphical && app.graphics.protocol == GraphicsProtocol::Kitty {
         spans.push(Span::styled("  Link ", label));
         spans.push(Span::raw(format!(
@@ -1705,4 +1816,721 @@ fn render_search_table(
     let mut state = ratatui::widgets::TableState::default();
     state.select(Some(selected_index.saturating_sub(scroll_offset)));
     f.render_stateful_widget(table, area, &mut state);
+}
+
+/// Format seconds as "1.2s", or "-" for none.
+fn seconds_text(value: Option<f64>) -> String {
+    value.map_or("-".to_string(), |v| format!("{:.1}s", v))
+}
+
+/// Delay of a stamp in milliseconds, or seconds when large; stamps far off
+/// the wall clock (sim time, unset stamps) show as "-".
+fn delay_text(delay: f64) -> String {
+    if delay.abs() > 86_400.0 {
+        "-".to_string()
+    } else if delay.abs() >= 1.0 {
+        format!("{:.1}s", delay)
+    } else {
+        format!("{:.1}ms", delay * 1000.0)
+    }
+}
+
+/// Roll, pitch and yaw in degrees.
+fn rpy_text(q: [f64; 4]) -> String {
+    let [r, p, y] = imu::euler(q);
+    format!(
+        "{:>6.1}° {:>6.1}° {:>6.1}°",
+        r.to_degrees(),
+        p.to_degrees(),
+        y.to_degrees()
+    )
+}
+
+fn xyz_text(v: [f64; 3]) -> String {
+    format!("{:>7.3} {:>7.3} {:>7.3}", v[0], v[1], v[2])
+}
+
+/// The frame tree with rates, ages and problems, above the details of the
+/// selected frame.
+fn render_tf(f: &mut Frame, view: &TfView, area: ratatui::layout::Rect) {
+    let now = std::time::Instant::now();
+    let tree = &view.tree;
+    let rows = tree.rows(now);
+    let selected = view.selected.min(rows.len().saturating_sub(1));
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(4), Constraint::Length(7)])
+        .split(area);
+
+    let header = Row::new([
+        "Frame",
+        "Kind",
+        "Rate",
+        "Age",
+        "Delay",
+        "Translation (m)",
+        "Roll Pitch Yaw",
+        "Status",
+    ])
+    .style(
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
+    let table_rows = rows.iter().map(|row| {
+        let entry = tree.frames.get(&row.frame);
+        let status = if row.issues.is_empty() {
+            Span::styled("OK", Style::default().fg(Color::Green))
+        } else {
+            let text: Vec<String> = row.issues.iter().map(Issue::text).collect();
+            let color = if row.issues.iter().any(Issue::is_error) {
+                Color::Red
+            } else {
+                Color::Yellow
+            };
+            Span::styled(text.join("; "), Style::default().fg(color))
+        };
+        let name = Span::raw(format!("{}{}", row.prefix, row.frame));
+        match entry {
+            None => Row::new(vec![
+                Cell::from(name),
+                Cell::from(Span::styled("root", Style::default().fg(Color::DarkGray))),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(status),
+            ]),
+            Some(e) => Row::new(vec![
+                Cell::from(name),
+                Cell::from(if e.is_static { "static" } else { "dynamic" }),
+                // A stopped frame has no rate, whatever it had before.
+                Cell::from(if e.is_static || e.stale_for(now).is_some() {
+                    "-".to_string()
+                } else {
+                    e.rate(now)
+                        .map_or("-".to_string(), |hz| format!("{:.1} Hz", hz))
+                }),
+                Cell::from(if e.is_static {
+                    "-".to_string()
+                } else {
+                    seconds_text(Some(e.age(now)))
+                }),
+                Cell::from(if e.is_static {
+                    "-".to_string()
+                } else {
+                    delay_text(e.delay)
+                }),
+                Cell::from(xyz_text(e.translation)),
+                Cell::from(rpy_text(e.rotation)),
+                Cell::from(status),
+            ]),
+        }
+    });
+    let table = Table::new(
+        table_rows,
+        [
+            Constraint::Min(24),
+            Constraint::Length(7),
+            Constraint::Length(9),
+            Constraint::Length(7),
+            Constraint::Length(9),
+            Constraint::Length(23),
+            Constraint::Length(23),
+            Constraint::Min(14),
+        ],
+    )
+    .header(header)
+    .row_highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
+    .highlight_symbol(">> ");
+    let mut state = ratatui::widgets::TableState::default();
+    state.select((!rows.is_empty()).then_some(selected));
+    f.render_stateful_widget(table, chunks[0], &mut state);
+
+    let Some(row) = rows.get(selected) else {
+        return;
+    };
+    let chain = tree.chain(&row.frame);
+    let root = chain.last().cloned().unwrap_or_default();
+    let (translation, rotation) = tree.in_root(&row.frame);
+    let mut details = vec![
+        ("Chain", vec![Span::raw(chain.join(" → "))]),
+        (
+            "In root",
+            vec![Span::raw(format!(
+                "{}: xyz {} m, rpy {}",
+                root,
+                xyz_text(translation),
+                rpy_text(rotation)
+            ))],
+        ),
+    ];
+    // Static transforms are valid at any time, so their stamps say nothing.
+    if let Some(e) = tree.frames.get(&row.frame).filter(|e| !e.is_static) {
+        details.push((
+            "Stamp",
+            vec![Span::raw(format!(
+                "{:.3} (delay {})",
+                e.stamp,
+                delay_text(e.delay)
+            ))],
+        ));
+    }
+    for issue in &row.issues {
+        let color = if issue.is_error() {
+            Color::Red
+        } else {
+            Color::Yellow
+        };
+        let text = match issue {
+            Issue::MultipleParents(parents) => format!(
+                "published with parents {}: two broadcasters disagree",
+                parents.join(" and ")
+            ),
+            Issue::Stale(age) => format!("no update for {:.1}s", age),
+            Issue::Cycle => "the frame is its own ancestor".to_string(),
+        };
+        details.push((
+            "Problem",
+            vec![Span::styled(text, Style::default().fg(color))],
+        ));
+    }
+    f.render_widget(
+        Paragraph::new(labeled_lines(details))
+            .wrap(Wrap { trim: false })
+            .block(create_block(&row.frame)),
+        chunks[1],
+    );
+}
+
+/// Pose, velocity and trail checks beside the trail, above velocity plots.
+fn render_odometry(f: &mut Frame, app: &App, view: &OdometryView, area: ratatui::layout::Rect) {
+    let Some(odom) = &view.latest else {
+        return;
+    };
+    let rows_area = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(area);
+    let top = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(52), Constraint::Min(10)])
+        .split(rows_area[0]);
+
+    let [px, py, pz] = odom.pose.position;
+    let mut rows = vec![
+        (
+            "Frames",
+            vec![Span::raw(format!(
+                "{} → {}",
+                odom.frame_id, odom.child_frame_id
+            ))],
+        ),
+        (
+            "Position",
+            vec![Span::raw(format!(
+                "x {:.3}  y {:.3}  z {:.3} m",
+                px, py, pz
+            ))],
+        ),
+        (
+            "Heading",
+            vec![Span::raw(format!("{:.1}°", odom.pose.yaw().to_degrees()))],
+        ),
+        (
+            "Speed",
+            vec![Span::raw(format!(
+                "{:.2} m/s  (x {:.2} y {:.2} z {:.2})",
+                odom.speed(),
+                odom.linear[0],
+                odom.linear[1],
+                odom.linear[2]
+            ))],
+        ),
+        (
+            "Turn rate",
+            vec![Span::raw(format!(
+                "{:.1}°/s around z",
+                odom.angular[2].to_degrees()
+            ))],
+        ),
+        (
+            "Travelled",
+            vec![Span::raw(format!("{:.2} m", view.trail.distance))],
+        ),
+        (
+            "Jumps",
+            vec![if view.trail.jumps > 0 {
+                Span::styled(
+                    format!(
+                        "{} (pose moved further than the speed explains)",
+                        view.trail.jumps
+                    ),
+                    Style::default().fg(Color::Yellow),
+                )
+            } else {
+                Span::styled("none", Style::default().fg(Color::Green))
+            }],
+        ),
+        (
+            "Std dev",
+            vec![match odom.pose_std_dev() {
+                Some([x, y, yaw]) => Span::raw(format!(
+                    "x {:.3} m  y {:.3} m  yaw {:.2}°",
+                    x,
+                    y,
+                    yaw.to_degrees()
+                )),
+                None => Span::styled("no covariance", Style::default().fg(Color::DarkGray)),
+            }],
+        ),
+    ];
+    if odom.child_frame_id.is_empty() {
+        rows.push((
+            "Warning",
+            vec![Span::styled(
+                "child_frame_id is empty",
+                Style::default().fg(Color::Yellow),
+            )],
+        ));
+    }
+    f.render_widget(
+        Paragraph::new(labeled_lines(rows)).block(create_block("Odometry")),
+        top[0],
+    );
+
+    let title = format!("Trail (m, {} frame)", odom.frame_id);
+    let block = create_block(&title);
+    let inner = block.inner(top[1]);
+    let points: Vec<(f64, f64)> = view.trail.points.iter().copied().collect();
+    let (x_bounds, y_bounds) = equal_aspect_bounds(app, &points, inner);
+    let yaw = odom.pose.yaw();
+    let arrow = (x_bounds[1] - x_bounds[0]).min(y_bounds[1] - y_bounds[0]) * 0.06;
+    let canvas = ratatui::widgets::canvas::Canvas::default()
+        .block(block)
+        .marker(symbols::Marker::Braille)
+        .x_bounds(x_bounds)
+        .y_bounds(y_bounds)
+        .paint(move |ctx| {
+            ctx.draw(&ratatui::widgets::canvas::Points {
+                coords: &points,
+                color: Color::Cyan,
+            });
+            ctx.draw(&ratatui::widgets::canvas::Line {
+                x1: px,
+                y1: py,
+                x2: px + arrow * yaw.cos(),
+                y2: py + arrow * yaw.sin(),
+                color: Color::Yellow,
+            });
+            ctx.print(
+                px,
+                py,
+                Span::styled("◆", Style::default().fg(Color::Yellow)),
+            );
+        });
+    f.render_widget(canvas, top[1]);
+
+    let plots = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows_area[1]);
+    let now = std::time::Instant::now();
+    let series = |pick: fn(&super::app::OdometryPoint) -> [f64; 3]| {
+        let mut axes: [Vec<(f64, f64)>; 3] = Default::default();
+        for entry in &view.history {
+            let t = -now.duration_since(entry.at).as_secs_f64();
+            for (axis, values) in axes.iter_mut().enumerate() {
+                values.push((t, pick(entry)[axis]));
+            }
+        }
+        axes
+    };
+    render_xyz_chart(f, "Linear velocity (m/s)", &series(|p| p.linear), plots[0]);
+    render_xyz_chart(
+        f,
+        "Angular velocity (rad/s)",
+        &series(|p| p.angular),
+        plots[1],
+    );
+}
+
+/// Path details beside the path, start green, end red.
+fn render_path(f: &mut Frame, app: &App, view: &PathView, area: ratatui::layout::Rect) {
+    let Some(path) = &view.latest else {
+        return;
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(44), Constraint::Min(10)])
+        .split(area);
+    let point = |p: Option<&super::odometry::Pose>| {
+        p.map_or("-".to_string(), |p| {
+            format!("x {:.2}  y {:.2} m", p.position[0], p.position[1])
+        })
+    };
+    let mut rows = vec![
+        ("Frame", vec![Span::raw(path.frame_id.clone())]),
+        ("Poses", vec![Span::raw(path.poses.len().to_string())]),
+        ("Length", vec![Span::raw(format!("{:.2} m", path.length()))]),
+        ("Start", vec![Span::raw(point(path.poses.first()))]),
+        ("End", vec![Span::raw(point(path.poses.last()))]),
+        ("Updates", vec![Span::raw(view.updates.to_string())]),
+    ];
+    if path.poses.is_empty() {
+        rows.push((
+            "Warning",
+            vec![Span::styled(
+                "empty path",
+                Style::default().fg(Color::Yellow),
+            )],
+        ));
+    }
+    f.render_widget(
+        Paragraph::new(labeled_lines(rows)).block(create_block("Path")),
+        chunks[0],
+    );
+
+    let title = format!("Path (m, {} frame)", path.frame_id);
+    let block = create_block(&title);
+    let inner = block.inner(chunks[1]);
+    let points: Vec<(f64, f64)> = path
+        .poses
+        .iter()
+        .map(|p| (p.position[0], p.position[1]))
+        .collect();
+    let (x_bounds, y_bounds) = equal_aspect_bounds(app, &points, inner);
+    let canvas = ratatui::widgets::canvas::Canvas::default()
+        .block(block)
+        .marker(symbols::Marker::Braille)
+        .x_bounds(x_bounds)
+        .y_bounds(y_bounds)
+        .paint(move |ctx| {
+            for w in points.windows(2) {
+                ctx.draw(&ratatui::widgets::canvas::Line {
+                    x1: w[0].0,
+                    y1: w[0].1,
+                    x2: w[1].0,
+                    y2: w[1].1,
+                    color: Color::Cyan,
+                });
+            }
+            if let Some(&(x, y)) = points.first() {
+                ctx.print(x, y, Span::styled("●", Style::default().fg(Color::Green)));
+            }
+            if let Some(&(x, y)) = points.last() {
+                ctx.print(x, y, Span::styled("◆", Style::default().fg(Color::Red)));
+            }
+        });
+    f.render_widget(canvas, chunks[1]);
+}
+
+/// A bar of `width` cells with a marker where `value` lies in `lo..hi`.
+fn range_bar(value: f64, lo: f64, hi: f64, width: usize) -> String {
+    if hi - lo < 1e-9 || !value.is_finite() {
+        return format!("{:─^width$}", "");
+    }
+    let at = (((value - lo) / (hi - lo)) * (width - 1) as f64).round() as usize;
+    (0..width)
+        .map(|i| match i.cmp(&at.min(width - 1)) {
+            std::cmp::Ordering::Less => '━',
+            std::cmp::Ordering::Equal => '●',
+            std::cmp::Ordering::Greater => '─',
+        })
+        .collect()
+}
+
+/// The joint table, above plots of the selected joint.
+fn render_joints(f: &mut Frame, view: &JointsView, area: ratatui::layout::Rect) {
+    let now = std::time::Instant::now();
+    let table = &view.table;
+    let names: Vec<&String> = table.joints.keys().collect();
+    let selected = view.selected.min(names.len().saturating_sub(1));
+    let warning_height = u16::from(table.malformed.is_some());
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(warning_height),
+            Constraint::Min(4),
+            Constraint::Length(12),
+        ])
+        .split(area);
+    if let Some(malformed) = &table.malformed {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                format!("Malformed message: {}", malformed),
+                Style::default().fg(Color::Yellow),
+            )),
+            chunks[0],
+        );
+    }
+
+    let number = |v: Option<f64>, digits: usize| match v {
+        Some(v) if v.is_finite() => format!("{:>9.digits$}", v),
+        Some(_) => "      NaN".to_string(),
+        None => "        -".to_string(),
+    };
+    let header = Row::new([
+        "Joint",
+        "Position",
+        "deg",
+        "Seen range",
+        "Velocity",
+        "Effort",
+        "Age",
+    ])
+    .style(
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
+    let rows = table.joints.iter().map(|(name, joint)| {
+        let age = now.duration_since(joint.updated);
+        let bar = match (joint.position, joint.range) {
+            (Some(p), Some((lo, hi))) => {
+                format!("{:>7.2} {} {:<7.2}", lo, range_bar(p, lo, hi, 16), hi)
+            }
+            _ => String::new(),
+        };
+        let style = if age > JOINT_STALE_AFTER {
+            Style::default().fg(Color::DarkGray)
+        } else if [joint.position, joint.velocity, joint.effort]
+            .iter()
+            .flatten()
+            .any(|v| !v.is_finite())
+        {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        };
+        Row::new(vec![
+            Cell::from(name.clone()),
+            Cell::from(number(joint.position, 4)),
+            Cell::from(number(joint.position.map(f64::to_degrees), 1)),
+            Cell::from(bar),
+            Cell::from(number(joint.velocity, 3)),
+            Cell::from(number(joint.effort, 2)),
+            Cell::from(seconds_text(Some(age.as_secs_f64()))),
+        ])
+        .style(style)
+    });
+    let widget = Table::new(
+        rows,
+        [
+            Constraint::Min(16),
+            Constraint::Length(10),
+            Constraint::Length(10),
+            Constraint::Length(34),
+            Constraint::Length(10),
+            Constraint::Length(10),
+            Constraint::Length(7),
+        ],
+    )
+    .header(header)
+    .row_highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
+    .highlight_symbol(">> ");
+    let mut state = ratatui::widgets::TableState::default();
+    state.select((!names.is_empty()).then_some(selected));
+    f.render_stateful_widget(widget, chunks[1], &mut state);
+
+    let Some(joint) = names.get(selected).map(|name| &table.joints[*name]) else {
+        return;
+    };
+    let mut position = vec![];
+    let mut velocity = vec![];
+    for (at, p, v) in &joint.history {
+        let t = -now.duration_since(*at).as_secs_f64();
+        position.extend(p.map(|p| (t, p)));
+        velocity.extend(v.map(|v| (t, v)));
+    }
+    let plots = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(chunks[2]);
+    let name = names[selected];
+    render_series_chart(
+        f,
+        &format!("{} position", name),
+        &[("position", Color::Cyan, &position)],
+        IMU_HISTORY,
+        plots[0],
+    );
+    render_series_chart(
+        f,
+        &format!("{} velocity", name),
+        &[("velocity", Color::Magenta, &velocity)],
+        IMU_HISTORY,
+        plots[1],
+    );
+}
+
+/// Charge gauge and battery details beside the cells, above voltage and
+/// current plots of the last minutes.
+fn render_battery(f: &mut Frame, view: &BatteryView, area: ratatui::layout::Rect) {
+    let Some(b) = &view.latest else {
+        return;
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(8),
+            Constraint::Length(10),
+        ])
+        .split(area);
+
+    let fraction = b.fraction();
+    let color = match fraction {
+        Some(f) if f < 0.15 => Color::Red,
+        Some(f) if f < 0.3 => Color::Yellow,
+        _ => Color::Green,
+    };
+    let mut label = match fraction {
+        Some(f) => format!("{:.0}% · {}", f * 100.0, b.status_name()),
+        None => format!("charge not reported · {}", b.status_name()),
+    };
+    if let Some(hours) = b.hours_left() {
+        label.push_str(&format!(
+            " · {}h {:02}m left",
+            hours.floor() as u64,
+            (hours.fract() * 60.0) as u64
+        ));
+    }
+    f.render_widget(
+        ratatui::widgets::Gauge::default()
+            .block(create_block("Charge"))
+            .gauge_style(Style::default().fg(color))
+            .ratio(fraction.unwrap_or(0.0))
+            .label(Span::styled(
+                label,
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+        chunks[0],
+    );
+
+    let middle = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(54), Constraint::Min(10)])
+        .split(chunks[1]);
+    let value = |v: f32, unit: &str| match measured(v) {
+        Some(v) => Span::raw(format!("{:.2} {}", v, unit)),
+        None => Span::styled("not measured", Style::default().fg(Color::DarkGray)),
+    };
+    let mut current = vec![value(b.current, "A")];
+    if let (Some(v), Some(i)) = (measured(b.voltage), measured(b.current)) {
+        current.push(Span::raw(format!(
+            "  ({} {:.0} W)",
+            if i >= 0.0 { "charging" } else { "drawing" },
+            (v * i).abs()
+        )));
+    }
+    let mut capacity = vec![
+        value(b.charge, "Ah"),
+        Span::raw(" of "),
+        value(b.capacity, "Ah"),
+    ];
+    if let Some(design) = measured(b.design_capacity) {
+        capacity.push(Span::raw(format!(" (design {:.1} Ah)", design)));
+    }
+    let health_style = if b.health_is_bad() {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let rows = vec![
+        ("Voltage", vec![value(b.voltage, "V")]),
+        ("Current", current),
+        ("Charge", capacity),
+        ("Temperature", vec![value(b.temperature, "°C")]),
+        ("Health", vec![Span::styled(b.health_name(), health_style)]),
+        ("Technology", vec![Span::raw(b.technology_name())]),
+        (
+            "Present",
+            vec![if b.present {
+                Span::raw("yes")
+            } else {
+                Span::styled("no", Style::default().fg(Color::Red))
+            }],
+        ),
+        (
+            "Location",
+            vec![Span::raw(format!("{} {}", b.location, b.serial_number))],
+        ),
+    ];
+    f.render_widget(
+        Paragraph::new(labeled_lines(rows)).block(create_block("Battery")),
+        middle[0],
+    );
+
+    // Cells, the weakest highlighted when they drift apart.
+    let mut cells = vec![];
+    if let Some((lo, hi)) = b.cell_spread() {
+        let unbalanced = hi - lo > 0.05;
+        cells.push(Line::from(vec![
+            Span::styled("Spread ", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!("{:.0} mV", (hi - lo) * 1000.0),
+                Style::default().fg(if unbalanced {
+                    Color::Yellow
+                } else {
+                    Color::Green
+                }),
+            ),
+        ]));
+        for (i, v) in b.cell_voltage.iter().enumerate() {
+            let text = match measured(*v) {
+                Some(v) => {
+                    let bar = range_bar(v, lo - 0.05, hi, 20);
+                    let style = if unbalanced && (v - lo).abs() < 1e-6 {
+                        Style::default().fg(Color::Yellow)
+                    } else {
+                        Style::default()
+                    };
+                    Span::styled(format!("{:>2}  {:.3} V  {}", i + 1, v, bar), style)
+                }
+                None => Span::styled(
+                    format!("{:>2}  not measured", i + 1),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            };
+            cells.push(Line::from(text));
+        }
+    } else {
+        cells.push(Line::from(Span::styled(
+            "No cell voltages reported",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    f.render_widget(
+        Paragraph::new(cells).block(create_block("Cells")),
+        middle[1],
+    );
+
+    let now = std::time::Instant::now();
+    let mut voltage = vec![];
+    let mut current = vec![];
+    for (at, v, i) in &view.history {
+        let t = -now.duration_since(*at).as_secs_f64();
+        voltage.extend(v.map(|v| (t, v)));
+        current.extend(i.map(|i| (t, i)));
+    }
+    let plots = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(chunks[2]);
+    render_series_chart(
+        f,
+        "Voltage (V)",
+        &[("voltage", Color::Yellow, &voltage)],
+        BATTERY_HISTORY,
+        plots[0],
+    );
+    render_series_chart(
+        f,
+        "Current (A)",
+        &[("current", Color::Magenta, &current)],
+        BATTERY_HISTORY,
+        plots[1],
+    );
 }

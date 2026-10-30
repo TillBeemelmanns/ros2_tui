@@ -19,7 +19,6 @@ from std_msgs.msg import String, Bool, Float64, Header
 from sensor_msgs.msg import Image, CompressedImage, CameraInfo, PointCloud2, Imu, NavSatFix, TimeReference
 from geometry_msgs.msg import PointStamped, PoseStamped, PoseWithCovarianceStamped, TwistStamped
 from nav_msgs.msg import Odometry
-from tf2_msgs.msg import TFMessage
 from visualization_msgs.msg import MarkerArray, Marker
 from rcl_interfaces.msg import Log
 from sensor_msgs.msg import PointField
@@ -207,9 +206,8 @@ class MultiPublisher(Node):
         # System info
         self.all_publishers['/robot_description'] = self.create_publisher(String, '/robot_description', 10)
         
-        # TF transforms
-        self.all_publishers['/tf'] = self.create_publisher(TFMessage, '/tf', 10)
-        self.all_publishers['/tf_static'] = self.create_publisher(TFMessage, '/tf_static', 10)
+        # /tf and /tf_static come from robot_publisher: a volatile publisher
+        # here would keep subscribers from getting the latched static frames.
         
         # Log messages
         self.all_publishers['/rosout'] = self.create_publisher(Log, '/rosout', 10)

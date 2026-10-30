@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 
 fn bridge(initial_fetch: bool) -> (ParamBridgeHandle, Receiver<ParamMessage>) {
     let (sender, receiver) = crossbeam::channel::unbounded();
-    let handle = ParamBridgeHandle::new(sender, Duration::from_secs(3600), initial_fetch);
+    // Refresh often: in CI the test nodes may still be starting.
+    let handle = ParamBridgeHandle::new(sender, Duration::from_secs(1), initial_fetch);
     (handle, receiver)
 }
 
@@ -33,23 +34,22 @@ fn wait_for<T>(receiver: &Receiver<ParamMessage>, pick: impl Fn(ParamMessage) ->
 #[test]
 #[ignore = "requires a live ROS2 graph with the ros2_tui_test dummy nodes"]
 fn fetches_params_for_all_nodes() {
+    // Lists are sent as nodes are discovered, so the first ones may be
+    // partial: wait for one with both test nodes.
     let (handle, receiver) = bridge(true);
+    let nodes = ["/param_setter", "/multi_publisher"];
     let params = wait_for(&receiver, |msg| match msg {
-        ParamMessage::ParamList(params) => Some(params),
+        ParamMessage::ParamList(params)
+            if nodes
+                .iter()
+                .all(|node| params.iter().any(|p| p.node_name == *node)) =>
+        {
+            Some(params)
+        }
         _ => None,
     });
     handle.shutdown();
-
-    // The dummy publishers expose both nodes' parameters.
-    for node in ["/param_setter", "/multi_publisher"] {
-        assert!(
-            params
-                .iter()
-                .any(|p| p.node_name == node && p.value.is_some()),
-            "expected parameters with values from {}",
-            node
-        );
-    }
+    assert!(params.iter().all(|p| p.value.is_some()));
 }
 
 #[test]

@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Params: array types show as `Integer[]`, `Double[]` and so on.
 
 ### Fixed
+- Params: a failed set stays on screen until it expires; the next periodic
+  refresh hid it within seconds.
+- Params: the live tests wait for the test nodes to be discovered, which
+  made them fail in CI.
 - Params: `Ctrl+l` opens the load dialog; the `l` navigation key took it before.
 - Params: loading a dump skips parameters that already have the file's
   value, so read-only parameters no longer make it fail.
@@ -36,6 +40,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   topic list misses them.
 
 ### Added
+- Topics: TF tree viewer for `/tf` and `/tf_static`: frames as a tree with
+  rate, age, stamp delay and transform, the selected frame's chain and pose
+  in its root, and checks for stale frames, frames with two parents, cycles
+  and disconnected trees.
+- Topics: odometry viewer (pose, speed, distance travelled, jumps,
+  covariance, a trail and velocity plots), path viewer, joint state viewer
+  (joints merged by name, ranges, plots of the selected joint) and battery
+  viewer (charge, time left, health, cell balance, voltage and current
+  plots).
+- Test publishers: `robot_publisher` publishes a TF tree with problems that
+  come and go, odometry, a planned path, joint states and a battery; the
+  launch file now also starts `dummy_publisher`.
 - Topics: image viewer for `sensor_msgs/msg/Image` and
   `sensor_msgs/msg/CompressedImage` topics, opened with `v`. Renders with the
   kitty graphics protocol (Ghostty, kitty, WezTerm), including over SSH, and

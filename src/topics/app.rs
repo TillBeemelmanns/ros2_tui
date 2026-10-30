@@ -1,12 +1,16 @@
+use super::battery::{self, BatteryState};
 use super::cloud_render::{self, CameraPreset, CloudCamera, ColorMode, RenderOptions};
 use super::diagnostics::{self, DiagnosticsTable};
 use super::image::{self, DecodedImage};
 use super::imu::{self, ImuSample};
+use super::joints::{self, JointTable};
 use super::navsat::{self, NavSatFix, Track};
 use super::occupancy;
+use super::odometry::{self, Odometry, Path, Trail};
 use super::pointcloud::{self, PointCloud};
 use super::ros;
 use super::ros::MeasurementStatus;
+use super::tf::{self, TfTree};
 use super::watcher::{
     FrameContent, RosBridgeHandle, TopicMessage, ViewFrame, ViewTarget, WatchMessage,
 };
@@ -26,12 +30,17 @@ pub const CHARTS_MAX_DATA_POINTS: usize = 100;
 /// Selectable viewer frame rate limits.
 pub const VIEW_FPS_STEPS: [u32; 6] = [1, 2, 5, 10, 15, 30];
 const DEFAULT_VIEW_FPS: u32 = 10;
-/// IMUs publish fast; a higher default keeps their plots detailed.
-const DEFAULT_IMU_FPS: u32 = 30;
-/// Span of the IMU plots.
+/// IMUs and odometry publish fast; a higher default keeps their plots
+/// detailed.
+const DEFAULT_PLOT_FPS: u32 = 30;
+/// Span of the IMU, odometry and joint plots.
 pub const IMU_HISTORY: Duration = Duration::from_secs(10);
-/// Rate limit for diagnostics, high enough to never drop a message: every
-/// driver publishes its own partial array, and each one matters.
+/// Span of the battery plots: batteries change slowly.
+pub const BATTERY_HISTORY: Duration = Duration::from_secs(600);
+/// Rate limit for diagnostics, TF and joint states, high enough to never
+/// drop a message: every driver publishes its own partial array, every
+/// broadcaster its own transforms, an arm and its gripper their own joints,
+/// and each one matters.
 const UNTHROTTLED_FPS: u32 = 1000;
 /// Span over which the viewer measures rates.
 const VIEW_RATE_WINDOW: Duration = Duration::from_secs(2);
@@ -64,6 +73,11 @@ pub fn has_viewer(msg_type: &str) -> bool {
         || occupancy::is_occupancy_grid_type(msg_type)
         || navsat::is_navsatfix_type(msg_type)
         || imu::is_imu_type(msg_type)
+        || tf::is_tf_type(msg_type)
+        || odometry::is_odometry_type(msg_type)
+        || odometry::is_path_type(msg_type)
+        || joints::is_joint_state_type(msg_type)
+        || battery::is_battery_state_type(msg_type)
 }
 
 /// Empty view content for a topic of `msg_type`.
@@ -76,6 +90,16 @@ fn view_content(msg_type: &str) -> ViewContent {
         ViewContent::Gnss(GnssView::default())
     } else if imu::is_imu_type(msg_type) {
         ViewContent::Imu(ImuView::default())
+    } else if tf::is_tf_type(msg_type) {
+        ViewContent::Tf(TfView::default())
+    } else if odometry::is_odometry_type(msg_type) {
+        ViewContent::Odometry(Box::default())
+    } else if odometry::is_path_type(msg_type) {
+        ViewContent::Path(PathView::default())
+    } else if joints::is_joint_state_type(msg_type) {
+        ViewContent::Joints(JointsView::default())
+    } else if battery::is_battery_state_type(msg_type) {
+        ViewContent::Battery(BatteryView::default())
     } else {
         // Images and occupancy grids.
         ViewContent::Image(None)
@@ -89,6 +113,77 @@ pub enum ViewContent {
     Diagnostics(DiagnosticsView),
     Gnss(GnssView),
     Imu(ImuView),
+    Tf(TfView),
+    Odometry(Box<OdometryView>),
+    Path(PathView),
+    Joints(JointsView),
+    Battery(BatteryView),
+}
+
+impl ViewContent {
+    /// Views that get every message rather than a frame rate limit.
+    pub fn is_unthrottled(&self) -> bool {
+        matches!(
+            self,
+            ViewContent::Diagnostics(_) | ViewContent::Tf(_) | ViewContent::Joints(_)
+        )
+    }
+
+    /// The selected row of views with a table.
+    fn selection_mut(&mut self) -> Option<&mut usize> {
+        match self {
+            ViewContent::Diagnostics(view) => Some(&mut view.selected),
+            ViewContent::Tf(view) => Some(&mut view.selected),
+            ViewContent::Joints(view) => Some(&mut view.selected),
+            _ => None,
+        }
+    }
+}
+
+/// TF viewer state: frames merged from /tf and /tf_static.
+#[derive(Default)]
+pub struct TfView {
+    pub tree: TfTree,
+    /// Row selected in the tree, clamped when drawn.
+    pub selected: usize,
+}
+
+/// Odometry viewer state: the latest message, the trail and the recent
+/// velocities the plots show.
+#[derive(Default)]
+pub struct OdometryView {
+    pub latest: Option<Odometry>,
+    pub trail: Trail,
+    pub history: VecDeque<OdometryPoint>,
+}
+
+pub struct OdometryPoint {
+    pub at: Instant,
+    pub linear: [f64; 3],
+    pub angular: [f64; 3],
+}
+
+/// Path viewer state: the latest path.
+#[derive(Default)]
+pub struct PathView {
+    pub latest: Option<Path>,
+    pub updates: usize,
+}
+
+/// Joint state viewer state: joints merged from all messages.
+#[derive(Default)]
+pub struct JointsView {
+    pub table: JointTable,
+    /// Row selected in the joint table, clamped when drawn.
+    pub selected: usize,
+}
+
+/// Battery viewer state: the latest state and its recent history.
+#[derive(Default)]
+pub struct BatteryView {
+    pub latest: Option<BatteryState>,
+    /// (time, voltage, current) of the last minutes.
+    pub history: VecDeque<(Instant, Option<f64>, Option<f64>)>,
 }
 
 /// GNSS viewer state: the latest fix and the track of recent ones.
@@ -295,6 +390,57 @@ impl TopicView {
                     view.history.pop_front();
                 }
                 view.latest = Some(sample);
+            }
+            (
+                ViewContent::Tf(view),
+                FrameContent::Tf {
+                    transforms,
+                    is_static,
+                },
+            ) => {
+                let wall_now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0.0, |d| d.as_secs_f64());
+                view.tree.update(transforms, is_static, now, wall_now);
+            }
+            (ViewContent::Odometry(view), FrameContent::Odometry(odom)) => {
+                view.trail.push(&odom);
+                let odom = *odom;
+                view.history.push_back(OdometryPoint {
+                    at: now,
+                    linear: odom.linear,
+                    angular: odom.angular,
+                });
+                while view
+                    .history
+                    .front()
+                    .is_some_and(|p| now.duration_since(p.at) > IMU_HISTORY)
+                {
+                    view.history.pop_front();
+                }
+                view.latest = Some(odom);
+            }
+            (ViewContent::Path(view), FrameContent::Path(path)) => {
+                view.updates += 1;
+                view.latest = Some(path);
+            }
+            (ViewContent::Joints(view), FrameContent::Joints(states)) => {
+                view.table.update(states, now)
+            }
+            (ViewContent::Battery(view), FrameContent::Battery(state)) => {
+                view.history.push_back((
+                    now,
+                    battery::measured(state.voltage),
+                    battery::measured(state.current),
+                ));
+                while view
+                    .history
+                    .front()
+                    .is_some_and(|p| now.duration_since(p.0) > BATTERY_HISTORY)
+                {
+                    view.history.pop_front();
+                }
+                view.latest = Some(state);
             }
             _ => return,
         }
@@ -789,7 +935,8 @@ impl App {
         };
         if !has_viewer(&topic.msg_type) {
             self.error_message = Some(format!(
-                "No viewer for {} (supported: images, point clouds, laser scans, diagnostics)",
+                "No viewer for {} (supported: images, point clouds, laser scans, maps, \
+                 diagnostics, GNSS, IMU, TF, odometry, paths, joint states, batteries)",
                 topic.msg_type
             ));
             return;
@@ -802,10 +949,15 @@ impl App {
             content: view_content(&topic.msg_type),
             frame_seq: 0,
             error: None,
-            max_fps: if diagnostics::is_diagnostics_type(&topic.msg_type) {
+            max_fps: if diagnostics::is_diagnostics_type(&topic.msg_type)
+                || tf::is_tf_type(&topic.msg_type)
+                || joints::is_joint_state_type(&topic.msg_type)
+            {
                 UNTHROTTLED_FPS
-            } else if imu::is_imu_type(&topic.msg_type) {
-                DEFAULT_IMU_FPS
+            } else if imu::is_imu_type(&topic.msg_type)
+                || odometry::is_odometry_type(&topic.msg_type)
+            {
+                DEFAULT_PLOT_FPS
             } else {
                 DEFAULT_VIEW_FPS
             },
@@ -818,8 +970,15 @@ impl App {
             rate_samples: VecDeque::new(),
             return_mode: std::mem::replace(&mut self.mode, AppMode::TopicView),
         };
+        // The TF tree needs both /tf and /tf_static.
+        let extra_topics = if tf::is_tf_type(&view.msg_type) {
+            tf::companion_topic(&view.topic_name).into_iter().collect()
+        } else {
+            vec![]
+        };
         let _ = self.bridge.send(WatchMessage::StartViewStream {
             topic_name: view.topic_name.clone(),
+            extra_topics,
             msg_type: view.msg_type.clone(),
             max_fps: view.max_fps,
             target,
@@ -872,6 +1031,13 @@ impl App {
         }
     }
 
+    fn view_selection_mut(&mut self) -> Option<&mut usize> {
+        if self.mode != AppMode::TopicView {
+            return None;
+        }
+        self.view.as_mut()?.content.selection_mut()
+    }
+
     fn diagnostics_view_mut(&mut self) -> Option<&mut DiagnosticsView> {
         if self.mode != AppMode::TopicView {
             return None;
@@ -911,7 +1077,7 @@ impl App {
         let Some(view) = self.view.as_mut() else {
             return;
         };
-        if matches!(view.content, ViewContent::Diagnostics(_)) {
+        if view.content.is_unthrottled() {
             return;
         }
         let current = VIEW_FPS_STEPS
@@ -969,10 +1135,7 @@ impl App {
                     .show(out, &rendered.image, rendered.seq, rect, force),
                 None => self.kitty.clear(out),
             },
-            ViewContent::Image(None)
-            | ViewContent::Diagnostics(_)
-            | ViewContent::Gnss(_)
-            | ViewContent::Imu(_) => self.kitty.clear(out),
+            _ => self.kitty.clear(out),
         }
     }
 
@@ -1028,8 +1191,8 @@ impl App {
         if self.mode == AppMode::TopicView {
             if let Some(cloud) = self.cloud_view_mut() {
                 cloud.camera.orbit(0.0, ORBIT_STEP);
-            } else if let Some(diag) = self.diagnostics_view_mut() {
-                diag.selected = diag.selected.saturating_sub(1);
+            } else if let Some(selected) = self.view_selection_mut() {
+                *selected = selected.saturating_sub(1);
             }
             return;
         }
@@ -1046,8 +1209,8 @@ impl App {
         if self.mode == AppMode::TopicView {
             if let Some(cloud) = self.cloud_view_mut() {
                 cloud.camera.orbit(0.0, -ORBIT_STEP);
-            } else if let Some(diag) = self.diagnostics_view_mut() {
-                diag.selected += 1;
+            } else if let Some(selected) = self.view_selection_mut() {
+                *selected += 1;
             }
             return;
         }

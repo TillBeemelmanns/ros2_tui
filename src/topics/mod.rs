@@ -1,13 +1,17 @@
 pub mod app;
+pub mod battery;
 pub mod cdr;
 pub mod cloud_render;
 pub mod diagnostics;
 pub mod image;
 pub mod imu;
+pub mod joints;
 pub mod navsat;
 pub mod occupancy;
+pub mod odometry;
 pub mod pointcloud;
 pub mod ros;
+pub mod tf;
 pub mod ui;
 pub mod watcher;
 

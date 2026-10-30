@@ -100,6 +100,22 @@ def generate_launch_description():
         output='screen'
     )
 
+    # TF tree, odometry, planned path, joint states and battery
+    robot_publisher_node = Node(
+        package='ros2_tui_test',
+        executable='robot_publisher',
+        name='robot_publisher',
+        output='screen'
+    )
+
+    # /test/sine_wave and friends with jitter
+    dummy_publisher_node = Node(
+        package='ros2_tui_test',
+        executable='dummy_publisher',
+        name='dummy_publisher',
+        output='screen'
+    )
+
     return LaunchDescription([
         publish_rate_arg,
         enable_cameras_arg,
@@ -111,5 +127,7 @@ def generate_launch_description():
         image_publisher_node,
         lidar_publisher_node,
         diagnostics_publisher_node,
-        nav_publisher_node
+        nav_publisher_node,
+        robot_publisher_node,
+        dummy_publisher_node,
     ])
