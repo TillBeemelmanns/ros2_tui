@@ -23,6 +23,11 @@ setup(
             'dummy_publisher = ros2_tui_test.dummy_publisher:main',
             'param_setter = ros2_tui_test.param_setter:main',
             'multi_publisher = ros2_tui_test.multi_publisher:main',
+            'image_publisher = ros2_tui_test.image_publisher:main',
+            'lidar_publisher = ros2_tui_test.lidar_publisher:main',
+            'diagnostics_publisher = ros2_tui_test.diagnostics_publisher:main',
+            'nav_publisher = ros2_tui_test.nav_publisher:main',
+            'robot_publisher = ros2_tui_test.robot_publisher:main',
         ],
     },
 )

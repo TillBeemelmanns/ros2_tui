@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use super::app::{AppMode, ParamsApp};
-use crate::common::{ParamTreeItem, PopupField, PopupType, UniformPopup};
+use crate::common::{scroll, ParamTreeItem, PopupField, PopupType, UniformPopup};
 
 pub fn ui(f: &mut Frame, app: &ParamsApp) {
     match app.mode {
@@ -45,6 +45,7 @@ fn render_help(f: &mut Frame) {
         )),
         Line::from("    ↑ / k       - Move selection up"),
         Line::from("    ↓ / j       - Move selection down"),
+        Line::from("    PgUp / PgDn - Jump to the first / last item"),
         Line::from("    ← / h       - Collapse selected group"),
         Line::from("    → / l       - Expand selected group"),
         Line::from(""),
@@ -145,17 +146,14 @@ fn render_param_list(f: &mut Frame, app: &ParamsApp) {
 }
 
 fn render_param_table(f: &mut Frame, app: &ParamsApp, area: ratatui::layout::Rect) {
-    let table_height = area.height.saturating_sub(2) as usize;
-    let mut scroll_offset = app.scroll_offset;
-    if app.selected_index >= scroll_offset.saturating_add(table_height) {
-        scroll_offset = app
-            .selected_index
-            .saturating_sub(table_height)
-            .saturating_add(1);
-    }
-    if app.selected_index < scroll_offset {
-        scroll_offset = app.selected_index;
-    }
+    let table_height = scroll::table_rows(area);
+    let scroll_offset = scroll::scroll_offset(
+        app.scroll_offset.get(),
+        app.selected_index,
+        app.visible_items.len(),
+        table_height,
+    );
+    app.scroll_offset.set(scroll_offset);
 
     let visible_items: Vec<&ParamTreeItem> = app
         .visible_items
@@ -237,6 +235,7 @@ fn render_param_table(f: &mut Frame, app: &ParamsApp, area: ratatui::layout::Rec
     let mut state = TableState::default();
     state.select(Some(app.selected_index.saturating_sub(scroll_offset)));
     f.render_stateful_widget(table, area, &mut state);
+    scroll::render_table_scrollbar(f, area, app.visible_items.len(), scroll_offset);
 }
 
 fn render_status_bar(f: &mut Frame, app: &ParamsApp, area: ratatui::layout::Rect) {
@@ -249,6 +248,8 @@ fn render_status_bar(f: &mut Frame, app: &ParamsApp, area: ratatui::layout::Rect
     let status_text = match app.mode {
         AppMode::ParamList => Line::from(vec![
             Span::raw("↑↓/jk Navigate | "),
+            Span::styled("PgUp/PgDn", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(": Top/Bottom | "),
             Span::styled("Enter", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(": Expand | "),
             Span::styled("s", Style::default().add_modifier(Modifier::BOLD)),

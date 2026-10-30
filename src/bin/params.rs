@@ -9,6 +9,7 @@ use ratatui::Terminal;
 use std::io::{self, stdout};
 use std::time::Duration;
 
+use ros2_tui::common::ros_helper;
 use ros2_tui::common::*;
 use ros2_tui::params::*;
 
@@ -53,14 +54,15 @@ fn main() -> io::Result<()> {
 
     debug_log(&format!("Configuration: refresh_rate={}s", refresh_rate));
 
-    // Check if ros2 is available
-    debug_log("Checking if ros2 command is available...");
-    if let Err(e) = std::process::Command::new("ros2").arg("--help").output() {
-        debug_log(&format!("Error: ros2 command not found: {:?}", e));
-        eprintln!("Error: ros2 command not found. Please ensure ROS2 is installed and sourced.");
+    // All ROS access goes through an rclpy helper, which needs ROS2 sourced.
+    if let Err(e) = ros_helper::check_ros_environment() {
+        debug_log(&format!("ROS2 environment check failed: {}", e));
+        eprintln!(
+            "Error: cannot use rclpy ({}). Please ensure ROS2 is installed and sourced.",
+            e
+        );
         std::process::exit(1);
     }
-    debug_log("ros2 command is available");
 
     // setup terminal
     install_panic_hook();
@@ -121,6 +123,16 @@ where
                         {
                             app.on_down()
                         }
+                        KeyCode::PageUp
+                            if app.mode == AppMode::ParamList || app.mode == AppMode::Search =>
+                        {
+                            app.on_page_up()
+                        }
+                        KeyCode::PageDown
+                            if app.mode == AppMode::ParamList || app.mode == AppMode::Search =>
+                        {
+                            app.on_page_down()
+                        }
                         KeyCode::Left if app.mode == AppMode::ParamList => app.on_left(),
                         KeyCode::Right if app.mode == AppMode::ParamList => app.on_right(),
                         KeyCode::Left if app.mode == AppMode::SetParameter => {
@@ -157,6 +169,12 @@ where
                             app.on_left()
                         }
                         KeyCode::Char('l')
+                            if key.modifiers.contains(KeyModifiers::CONTROL)
+                                && app.mode == AppMode::ParamList =>
+                        {
+                            app.on_load_parameters()
+                        }
+                        KeyCode::Char('l')
                             if !app.is_in_search_mode() && app.mode == AppMode::ParamList =>
                         {
                             app.on_right()
@@ -189,12 +207,6 @@ where
                             if !app.is_in_search_mode() && app.mode == AppMode::ParamList =>
                         {
                             app.on_dump_parameters()
-                        }
-                        KeyCode::Char('l')
-                            if key.modifiers.contains(KeyModifiers::CONTROL)
-                                && app.mode == AppMode::ParamList =>
-                        {
-                            app.on_load_parameters()
                         }
                         KeyCode::Char('?')
                             if !app.is_in_search_mode() && app.mode == AppMode::ParamList =>

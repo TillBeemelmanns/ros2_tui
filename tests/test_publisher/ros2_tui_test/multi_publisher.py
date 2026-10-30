@@ -19,9 +19,21 @@ from std_msgs.msg import String, Bool, Float64, Header
 from sensor_msgs.msg import Image, CompressedImage, CameraInfo, PointCloud2, Imu, NavSatFix, TimeReference
 from geometry_msgs.msg import PointStamped, PoseStamped, PoseWithCovarianceStamped, TwistStamped
 from nav_msgs.msg import Odometry
-from tf2_msgs.msg import TFMessage
 from visualization_msgs.msg import MarkerArray, Marker
 from rcl_interfaces.msg import Log
+from sensor_msgs.msg import PointField
+
+try:
+    import cv2
+except ImportError:  # compressed camera images are skipped without OpenCV
+    cv2 = None
+
+CAMERA_POSITIONS = [
+    'front_center', 'front_left', 'front_right',
+    'rear_center', 'rear_left', 'rear_right'
+]
+# Frames per camera in the pre-encoded JPEG loop
+CAMERA_LOOP_FRAMES = 30
 
 
 class MultiPublisher(Node):
@@ -51,6 +63,9 @@ class MultiPublisher(Node):
         # Initialize publishers
         self.all_publishers = {}
         self.setup_all_publishers()
+        # Real JPEGs, encoded once: encoding six streams at 30 Hz would load
+        # the CPU enough to skew the timing of everything else.
+        self.camera_loops = self.encode_camera_loops() if self.enable_cameras else {}
         
         # Counter for varying data
         self.counter = 0
@@ -140,12 +155,7 @@ class MultiPublisher(Node):
         
         # Camera topics (removing brand names like 'zed')
         if self.enable_cameras:
-            camera_positions = [
-                'front_center', 'front_left', 'front_right',
-                'rear_center', 'rear_left', 'rear_right'
-            ]
-            
-            for pos in camera_positions:
+            for pos in CAMERA_POSITIONS:
                 # Camera info
                 topic_name = f'/drivers/camera/{pos}/left/camera_info'
                 self.all_publishers[topic_name] = self.create_publisher(CameraInfo, topic_name, 10)
@@ -196,9 +206,8 @@ class MultiPublisher(Node):
         # System info
         self.all_publishers['/robot_description'] = self.create_publisher(String, '/robot_description', 10)
         
-        # TF transforms
-        self.all_publishers['/tf'] = self.create_publisher(TFMessage, '/tf', 10)
-        self.all_publishers['/tf_static'] = self.create_publisher(TFMessage, '/tf_static', 10)
+        # /tf and /tf_static come from robot_publisher: a volatile publisher
+        # here would keep subscribers from getting the latched static frames.
         
         # Log messages
         self.all_publishers['/rosout'] = self.create_publisher(Log, '/rosout', 10)
@@ -218,51 +227,75 @@ class MultiPublisher(Node):
         
         return msg
     
-    def create_dummy_compressed_image(self) -> CompressedImage:
-        """Create dummy compressed image message"""
+    def encode_camera_loops(self) -> Dict[str, list]:
+        """Encode a seamless animated JPEG loop for every camera"""
+        if cv2 is None:
+            self.get_logger().warn('OpenCV not available, not publishing compressed images')
+            return {}
+        width, height = 960, 540
+        ys, xs = np.mgrid[0:height, 0:width].astype(np.float32)
+        loops = {}
+        for index, pos in enumerate(CAMERA_POSITIONS):
+            hue = index / len(CAMERA_POSITIONS)
+            base = np.array([
+                128 + 100 * math.cos(2 * math.pi * hue),
+                128 + 100 * math.cos(2 * math.pi * (hue + 1 / 3)),
+                128 + 100 * math.cos(2 * math.pi * (hue + 2 / 3)),
+            ], dtype=np.float32)
+            frames = []
+            for f in range(CAMERA_LOOP_FRAMES):
+                phase = 2 * math.pi * f / CAMERA_LOOP_FRAMES
+                shade = 0.55 + 0.45 * np.sin(xs * 0.02 + ys * 0.01 + phase)
+                img = (shade[..., None] * base).astype(np.uint8)
+                bar_x = int((width - 60) * (0.5 + 0.5 * math.sin(phase)))
+                img[:, bar_x:bar_x + 60] = 255 - base.astype(np.uint8)
+                cv2.putText(img, pos, (30, 70), cv2.FONT_HERSHEY_SIMPLEX, 2.0,
+                            (255, 255, 255), 4, cv2.LINE_AA)
+                ok, jpeg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                if ok:
+                    frames.append(jpeg.tobytes())
+            loops[pos] = frames
+        return loops
+
+    def create_compressed_image(self, topic_name: str) -> CompressedImage:
+        """Next frame of the topic's camera loop"""
+        pos = topic_name.split('/')[3]
+        frames = self.camera_loops[pos]
         msg = CompressedImage()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = "camera_frame"
-        msg.format = "jpeg"
-        
-        # Create a small dummy JPEG-like data
-        # In reality, this would be actual compressed image data
-        dummy_size = 1024 + (self.counter % 512)  # Varying size
-        msg.data = bytes([0xFF, 0xD8] + [i % 256 for i in range(dummy_size-2)])  # JPEG header + dummy data
-        
+        msg.header.frame_id = f"camera_{pos}_optical_frame"
+        msg.format = "bgr8; jpeg compressed bgr8"
+        msg.data = frames[self.counter % len(frames)]
         return msg
-    
-    def create_dummy_pointcloud2(self) -> PointCloud2:
-        """Create dummy PointCloud2 message"""
+
+    def create_dummy_pointcloud2(self, num_points=None) -> PointCloud2:
+        """Noisy ring of xyz points around the sensor"""
         msg = PointCloud2()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "lidar_frame"
-        
-        # Dummy point cloud data
+
+        n = num_points if num_points is not None else 1000 + (self.counter % 500)
+        angle = np.linspace(0, 2 * np.pi, n, endpoint=False) + self.counter * 0.01
+        radius = 5.0 + np.random.normal(0, 0.1, n)
+        points = np.stack([
+            np.cos(angle) * radius,
+            np.sin(angle) * radius,
+            np.random.normal(0, 0.5, n),
+        ], axis=1).astype('<f4')
+
         msg.height = 1
-        msg.width = 1000 + (self.counter % 500)  # Varying number of points
-        msg.is_dense = True
+        msg.width = n
+        msg.fields = [
+            PointField(name=name, offset=4 * i, datatype=PointField.FLOAT32, count=1)
+            for i, name in enumerate('xyz')
+        ]
         msg.is_bigendian = False
-        
-        # Simple XYZ point format
-        msg.point_step = 12  # 3 floats * 4 bytes
-        msg.row_step = msg.point_step * msg.width
-        
-        # Create dummy point data
-        points_data = []
-        for i in range(msg.width):
-            # Create circular pattern with some noise
-            angle = (i / msg.width) * 2 * math.pi + (self.counter * 0.01)
-            x = math.cos(angle) * (5.0 + np.random.normal(0, 0.1))
-            y = math.sin(angle) * (5.0 + np.random.normal(0, 0.1))
-            z = np.random.normal(0, 0.5)
-            
-            # Pack as bytes (simplified - normally would use struct.pack)
-            points_data.extend([int(x * 100) % 256, int(y * 100) % 256, int(z * 100) % 256] * 4)
-        
-        msg.data = bytes(points_data)
+        msg.point_step = 12
+        msg.row_step = msg.point_step * n
+        msg.is_dense = True
+        msg.data = points.tobytes()
         return msg
-    
+
     def create_dummy_imu(self) -> Imu:
         """Create dummy IMU message with realistic motion patterns"""
         msg = Imu()
@@ -393,8 +426,8 @@ class MultiPublisher(Node):
                 try:
                     if 'camera_info' in topic_name:
                         publisher.publish(self.create_dummy_camera_info())
-                    elif 'image_rect_color/compressed' in topic_name:
-                        publisher.publish(self.create_dummy_compressed_image())
+                    elif 'image_rect_color/compressed' in topic_name and self.camera_loops:
+                        publisher.publish(self.create_compressed_image(topic_name))
                 except Exception as e:
                     if self.enable_debug:
                         self.get_logger().warn(f"Failed to publish camera topic {topic_name}: {e}")
@@ -493,34 +526,21 @@ class MultiPublisher(Node):
                         msg.encoding = "32FC1"
                         msg.step = msg.width * 4
                         
-                        # Create more interesting depth data with patterns that change over time
-                        depth_data = []
-                        for y in range(msg.height):
-                            for x in range(msg.width):
-                                # Create depth gradient with time-varying patterns
-                                base_depth = 5.0 + 3.0 * math.sin((x + y + elapsed * 10) * 0.01)
-                                noise = np.random.normal(0, 0.2)
-                                depth_val = max(0.1, base_depth + noise)
-                                # Convert to bytes (simplified depth representation)
-                                depth_bytes = int(depth_val * 100) % 65536
-                                depth_data.extend([
-                                    depth_bytes & 0xFF, 
-                                    (depth_bytes >> 8) & 0xFF,
-                                    0, 0  # Pad to 4 bytes for 32FC1
-                                ])
-                        
-                        msg.data = bytes(depth_data)
+                        # Depth gradient with time-varying patterns, in meters
+                        ys, xs = np.mgrid[0:msg.height, 0:msg.width]
+                        base_depth = 5.0 + 3.0 * np.sin((xs + ys + elapsed * 10) * 0.01)
+                        noise = np.random.normal(0, 0.2, base_depth.shape)
+                        depth = np.maximum(0.1, base_depth + noise)
+                        msg.data = depth.astype('<f4').tobytes()
                         publisher.publish(msg)
                         
                     elif 'point_cloud' in topic_name:
                         # Publish AI-processed point cloud with variable density
-                        msg = self.create_dummy_pointcloud2()
-                        # Modify the point cloud to simulate AI processing effects
-                        msg.header.frame_id = "ai_lidar_frame"
                         # Variable point density based on processing complexity
                         density_factor = 0.5 + 0.5 * math.sin(elapsed * 0.2)
-                        msg.width = int(msg.width * density_factor)
-                        msg.row_step = msg.point_step * msg.width
+                        num_points = max(1, int((1000 + self.counter % 500) * density_factor))
+                        msg = self.create_dummy_pointcloud2(num_points)
+                        msg.header.frame_id = "ai_lidar_frame"
                         publisher.publish(msg)
                         
                 except Exception as e:

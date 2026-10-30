@@ -1,14 +1,18 @@
 use clap::{Arg, Command};
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseEventKind,
+};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::ExecutableCommand;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::Terminal;
-use std::io::{self, stdout};
+use std::io::{self, stdout, Write};
 use std::time::Duration;
 
+use ros2_tui::common::graphics;
+use ros2_tui::common::ros_helper;
 use ros2_tui::common::*;
 use ros2_tui::topics::*;
 
@@ -66,18 +70,22 @@ fn main() -> io::Result<()> {
         refresh_rate, detail_refresh_rate
     ));
 
-    // Check if ros2 is available
-    debug_log("Checking if ros2 command is available...");
-    if let Err(e) = std::process::Command::new("ros2").arg("--help").output() {
-        debug_log(&format!("Error: ros2 command not found: {:?}", e));
-        eprintln!("Error: ros2 command not found. Please ensure ROS2 is installed and sourced.");
+    // All ROS access goes through an rclpy helper, which needs ROS2 sourced.
+    if let Err(e) = ros_helper::check_ros_environment() {
+        debug_log(&format!("ROS2 environment check failed: {}", e));
+        eprintln!(
+            "Error: cannot use rclpy ({}). Please ensure ROS2 is installed and sourced.",
+            e
+        );
         std::process::exit(1);
     }
-    debug_log("ros2 command is available");
 
     // setup terminal
     install_panic_hook();
     enable_raw_mode()?;
+    // Ask the terminal about image support before the event loop reads input.
+    let terminal_graphics = graphics::detect();
+    debug_log(&format!("Terminal graphics: {:?}", terminal_graphics));
     stdout().execute(EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
 
@@ -87,6 +95,7 @@ fn main() -> io::Result<()> {
         Duration::from_secs(detail_refresh_rate),
         !skip_initial_fetch,
     );
+    app.graphics = terminal_graphics;
     debug_log("App created successfully");
 
     let result = run_app(&mut terminal, &mut app);
@@ -98,10 +107,11 @@ fn main() -> io::Result<()> {
     result
 }
 
-fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()>
+fn run_app<B: Backend + Write>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()>
 where
     io::Error: From<B::Error>,
 {
+    let mut mouse_captured = false;
     loop {
         // Process any pending messages from worker threads
         app.try_receive_messages();
@@ -111,17 +121,30 @@ where
 
         // Draw the UI
         terminal.draw(|f| ui(f, app))?;
+        app.sync_graphics(terminal.backend_mut())?;
+
+        if app.wants_mouse() != mouse_captured {
+            mouse_captured = !mouse_captured;
+            if mouse_captured {
+                terminal.backend_mut().execute(EnableMouseCapture)?;
+            } else {
+                terminal.backend_mut().execute(DisableMouseCapture)?;
+            }
+        }
 
         // Handle events with timeout
-        if event::poll(Duration::from_millis(50))? {
-            // ~20 FPS - very fast for animation
+        if event::poll(app.poll_interval())? {
             match event::read()? {
                 Event::Key(key) => match key.code {
                     KeyCode::Char('q') => app.on_key('q'),
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         app.should_quit = true
                     }
-                    KeyCode::Char('c') if !app.is_in_search_mode() => app.toggle_collapse_all(),
+                    KeyCode::Char('c')
+                        if !app.is_in_search_mode() && app.mode != AppMode::TopicView =>
+                    {
+                        app.toggle_collapse_all()
+                    }
                     KeyCode::Up => app.on_up(),
                     KeyCode::Down => app.on_down(),
                     KeyCode::Left => app.on_left(),
@@ -135,8 +158,8 @@ where
                     KeyCode::Char(' ') => app.on_space(),
                     KeyCode::Char('r') | KeyCode::F(5) => app.on_key('r'),
                     KeyCode::Char('e') if !app.is_in_search_mode() => app.toggle_echo(),
-                    KeyCode::PageUp => app.echo_page_up(),
-                    KeyCode::PageDown => app.echo_page_down(),
+                    KeyCode::PageUp => app.on_page_up(),
+                    KeyCode::PageDown => app.on_page_down(),
                     KeyCode::Home => app.echo_home(),
                     KeyCode::End => app.echo_end(),
                     KeyCode::F(4) => app.on_f4(),
@@ -145,15 +168,22 @@ where
                     KeyCode::Char(c) => app.on_key(c),
                     _ => {}
                 },
-                Event::Resize(_, _) => {
-                    // Handle terminal resize
-                }
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollUp => app.on_scroll(true),
+                    MouseEventKind::ScrollDown => app.on_scroll(false),
+                    _ => {}
+                },
+                Event::Resize(_, _) => app.on_resize(),
                 _ => {}
             }
         }
 
         if app.should_quit {
             debug_log("Application quitting - shutting down background tasks");
+            app.clear_graphics(terminal.backend_mut())?;
+            if mouse_captured {
+                terminal.backend_mut().execute(DisableMouseCapture)?;
+            }
             app.shutdown();
             return Ok(());
         }

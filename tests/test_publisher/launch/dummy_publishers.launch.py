@@ -68,6 +68,54 @@ def generate_launch_description():
         output='screen'
     )
 
+    # Animated camera and depth images for the image viewer
+    image_publisher_node = Node(
+        package='ros2_tui_test',
+        executable='image_publisher',
+        name='image_publisher',
+        output='screen'
+    )
+
+    # Simulated lidar and colored point clouds for the point cloud viewer
+    lidar_publisher_node = Node(
+        package='ros2_tui_test',
+        executable='lidar_publisher',
+        name='lidar_publisher',
+        output='screen'
+    )
+
+    # /diagnostics from several simulated drivers
+    diagnostics_publisher_node = Node(
+        package='ros2_tui_test',
+        executable='diagnostics_publisher',
+        name='diagnostics_publisher',
+        output='screen'
+    )
+
+    # Map, costmap, GNSS fix and IMU
+    nav_publisher_node = Node(
+        package='ros2_tui_test',
+        executable='nav_publisher',
+        name='nav_publisher',
+        output='screen'
+    )
+
+    # TF tree, odometry, planned path, joint states and battery
+    robot_publisher_node = Node(
+        package='ros2_tui_test',
+        executable='robot_publisher',
+        name='robot_publisher',
+        output='screen'
+    )
+
+    # /test/sine_wave and friends with jitter
+    dummy_publisher_node = Node(
+        package='ros2_tui_test',
+        executable='dummy_publisher',
+        name='dummy_publisher',
+        output='screen'
+    )
+
     return LaunchDescription([
         publish_rate_arg,
         enable_cameras_arg,
@@ -75,5 +123,11 @@ def generate_launch_description():
         enable_imu_arg,
         enable_debug_arg,
         multi_publisher_node,
-        param_setter_node
+        param_setter_node,
+        image_publisher_node,
+        lidar_publisher_node,
+        diagnostics_publisher_node,
+        nav_publisher_node,
+        robot_publisher_node,
+        dummy_publisher_node,
     ])

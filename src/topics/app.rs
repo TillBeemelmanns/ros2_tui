@@ -1,12 +1,53 @@
+use super::battery::{self, BatteryState};
+use super::cloud_render::{self, CameraPreset, CloudCamera, ColorMode, RenderOptions};
+use super::diagnostics::{self, DiagnosticsTable};
+use super::image::{self, DecodedImage};
+use super::imu::{self, ImuSample};
+use super::joints::{self, JointTable};
+use super::navsat::{self, NavSatFix, Track};
+use super::occupancy;
+use super::odometry::{self, Odometry, Path, Trail};
+use super::pointcloud::{self, PointCloud};
 use super::ros;
 use super::ros::MeasurementStatus;
-use super::watcher::{TopicDetailWatcherHandle, TopicMessage, TopicWatcherHandle, WatchMessage};
+use super::tf::{self, TfTree};
+use super::watcher::{
+    FrameContent, RosBridgeHandle, TopicMessage, ViewFrame, ViewTarget, WatchMessage,
+};
+use crate::common::graphics::{GraphicsProtocol, KittyPlacement, TerminalGraphics};
 use crate::common::{TopicTree, TopicTreeItem};
-use crossbeam::channel::{Receiver, Sender};
-use std::collections::HashMap;
-use std::time::Duration;
+use ::image::RgbImage;
+use crossbeam::channel::Receiver;
+use ratatui::layout::Rect;
+use std::cell::{Cell, Ref, RefCell};
+use std::collections::{HashMap, VecDeque};
+use std::io::{self, Write};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 pub const CHARTS_MAX_DATA_POINTS: usize = 100;
+
+/// Selectable viewer frame rate limits.
+pub const VIEW_FPS_STEPS: [u32; 6] = [1, 2, 5, 10, 15, 30];
+const DEFAULT_VIEW_FPS: u32 = 10;
+/// IMUs and odometry publish fast; a higher default keeps their plots
+/// detailed.
+const DEFAULT_PLOT_FPS: u32 = 30;
+/// Span of the IMU, odometry and joint plots.
+pub const IMU_HISTORY: Duration = Duration::from_secs(10);
+/// Span of the battery plots: batteries change slowly.
+pub const BATTERY_HISTORY: Duration = Duration::from_secs(600);
+/// Rate limit for diagnostics, TF and joint states, high enough to never
+/// drop a message: every driver publishes its own partial array, every
+/// broadcaster its own transforms, an arm and its gripper their own joints,
+/// and each one matters.
+const UNTHROTTLED_FPS: u32 = 1000;
+/// Span over which the viewer measures rates.
+const VIEW_RATE_WINDOW: Duration = Duration::from_secs(2);
+/// Point cloud orbit step per arrow key press.
+const ORBIT_STEP: f32 = 2.5 * std::f32::consts::PI / 180.0;
+/// Zoom per scroll wheel event; trackpads send many small ones.
+const WHEEL_ZOOM_STEP: f32 = 1.1;
 
 #[derive(PartialEq, Debug)]
 pub enum AppMode {
@@ -14,12 +55,398 @@ pub enum AppMode {
     TopicDetail,
     Search,
     Help,
+    TopicView,
 }
 
 #[derive(PartialEq, Debug)]
 pub enum DetailPaneFocus {
     Info,
     Echo,
+}
+
+/// Whether `v` can open a viewer for messages of `msg_type`.
+pub fn has_viewer(msg_type: &str) -> bool {
+    image::is_image_type(msg_type)
+        || pointcloud::is_pointcloud_type(msg_type)
+        || pointcloud::is_laserscan_type(msg_type)
+        || diagnostics::is_diagnostics_type(msg_type)
+        || occupancy::is_occupancy_grid_type(msg_type)
+        || navsat::is_navsatfix_type(msg_type)
+        || imu::is_imu_type(msg_type)
+        || tf::is_tf_type(msg_type)
+        || odometry::is_odometry_type(msg_type)
+        || odometry::is_path_type(msg_type)
+        || joints::is_joint_state_type(msg_type)
+        || battery::is_battery_state_type(msg_type)
+}
+
+/// Empty view content for a topic of `msg_type`.
+fn view_content(msg_type: &str) -> ViewContent {
+    if pointcloud::is_pointcloud_type(msg_type) || pointcloud::is_laserscan_type(msg_type) {
+        ViewContent::Cloud(Box::new(CloudView::new()))
+    } else if diagnostics::is_diagnostics_type(msg_type) {
+        ViewContent::Diagnostics(DiagnosticsView::default())
+    } else if navsat::is_navsatfix_type(msg_type) {
+        ViewContent::Gnss(GnssView::default())
+    } else if imu::is_imu_type(msg_type) {
+        ViewContent::Imu(ImuView::default())
+    } else if tf::is_tf_type(msg_type) {
+        ViewContent::Tf(TfView::default())
+    } else if odometry::is_odometry_type(msg_type) {
+        ViewContent::Odometry(Box::default())
+    } else if odometry::is_path_type(msg_type) {
+        ViewContent::Path(PathView::default())
+    } else if joints::is_joint_state_type(msg_type) {
+        ViewContent::Joints(JointsView::default())
+    } else if battery::is_battery_state_type(msg_type) {
+        ViewContent::Battery(BatteryView::default())
+    } else {
+        // Images and occupancy grids.
+        ViewContent::Image(None)
+    }
+}
+
+/// What a topic view shows; `None` until the first message arrives.
+pub enum ViewContent {
+    Image(Option<DecodedImage>),
+    Cloud(Box<CloudView>),
+    Diagnostics(DiagnosticsView),
+    Gnss(GnssView),
+    Imu(ImuView),
+    Tf(TfView),
+    Odometry(Box<OdometryView>),
+    Path(PathView),
+    Joints(JointsView),
+    Battery(BatteryView),
+}
+
+impl ViewContent {
+    /// Views that get every message rather than a frame rate limit.
+    pub fn is_unthrottled(&self) -> bool {
+        matches!(
+            self,
+            ViewContent::Diagnostics(_) | ViewContent::Tf(_) | ViewContent::Joints(_)
+        )
+    }
+
+    /// The selected row of views with a table.
+    fn selection_mut(&mut self) -> Option<&mut usize> {
+        match self {
+            ViewContent::Diagnostics(view) => Some(&mut view.selected),
+            ViewContent::Tf(view) => Some(&mut view.selected),
+            ViewContent::Joints(view) => Some(&mut view.selected),
+            _ => None,
+        }
+    }
+}
+
+/// TF viewer state: frames merged from /tf and /tf_static.
+#[derive(Default)]
+pub struct TfView {
+    pub tree: TfTree,
+    /// Row selected in the tree, clamped when drawn.
+    pub selected: usize,
+}
+
+/// Odometry viewer state: the latest message, the trail and the recent
+/// velocities the plots show.
+#[derive(Default)]
+pub struct OdometryView {
+    pub latest: Option<Odometry>,
+    pub trail: Trail,
+    pub history: VecDeque<OdometryPoint>,
+}
+
+pub struct OdometryPoint {
+    pub at: Instant,
+    pub linear: [f64; 3],
+    pub angular: [f64; 3],
+}
+
+/// Path viewer state: the latest path.
+#[derive(Default)]
+pub struct PathView {
+    pub latest: Option<Path>,
+    pub updates: usize,
+}
+
+/// Joint state viewer state: joints merged from all messages.
+#[derive(Default)]
+pub struct JointsView {
+    pub table: JointTable,
+    /// Row selected in the joint table, clamped when drawn.
+    pub selected: usize,
+}
+
+/// Battery viewer state: the latest state and its recent history.
+#[derive(Default)]
+pub struct BatteryView {
+    pub latest: Option<BatteryState>,
+    /// (time, voltage, current) of the last minutes.
+    pub history: VecDeque<(Instant, Option<f64>, Option<f64>)>,
+}
+
+/// GNSS viewer state: the latest fix and the track of recent ones.
+#[derive(Default)]
+pub struct GnssView {
+    pub latest: Option<NavSatFix>,
+    pub track: Track,
+    pub fixes: usize,
+}
+
+/// IMU viewer state: the latest sample and the recent history the plots show.
+#[derive(Default)]
+pub struct ImuView {
+    pub latest: Option<ImuSample>,
+    pub history: VecDeque<ImuPoint>,
+}
+
+pub struct ImuPoint {
+    pub at: Instant,
+    pub acceleration: Option<[f64; 3]>,
+    pub turn_rate: Option<[f64; 3]>,
+}
+
+/// Diagnostics viewer state: statuses merged from all arrays received.
+#[derive(Default)]
+pub struct DiagnosticsView {
+    pub table: DiagnosticsTable,
+    /// Row selected in the status table, clamped when drawn.
+    pub selected: usize,
+    pub problems_only: bool,
+}
+
+/// Point cloud viewer state: the latest cloud and how it is looked at.
+pub struct CloudView {
+    pub cloud: Option<PointCloud>,
+    pub camera: CloudCamera,
+    pub color: ColorMode,
+    pub grid: bool,
+    /// View radius fitted to the first cloud, restored by a reset.
+    fitted_radius: Option<f32>,
+    rendered: RefCell<Option<RenderedCloud>>,
+}
+
+/// A rendered cloud and what it was rendered from, to skip re-rendering
+/// while nothing changes.
+pub struct RenderedCloud {
+    pub image: RgbImage,
+    /// Distinguishes renders, like `TopicView::frame_seq` frames.
+    pub seq: u64,
+    key: RenderKey,
+}
+
+#[derive(PartialEq)]
+struct RenderKey {
+    frame_seq: u64,
+    camera: CloudCamera,
+    color: ColorMode,
+    grid: bool,
+    size: (u32, u32),
+}
+
+impl CloudView {
+    fn new() -> Self {
+        Self {
+            cloud: None,
+            camera: CloudCamera::new(CameraPreset::Top, 10.0),
+            color: ColorMode::Height,
+            grid: true,
+            fitted_radius: None,
+            rendered: RefCell::new(None),
+        }
+    }
+
+    fn set_cloud(&mut self, cloud: PointCloud) {
+        if self.fitted_radius.is_none() && !cloud.points.is_empty() {
+            let radius = cloud_render::fit_radius(&cloud);
+            self.fitted_radius = Some(radius);
+            self.camera = CloudCamera::new(self.camera.preset, radius);
+            self.color = ColorMode::available(&cloud)[0];
+        }
+        self.cloud = Some(cloud);
+    }
+
+    fn reset_camera(&mut self, preset: CameraPreset) {
+        self.camera = CloudCamera::new(preset, self.fitted_radius.unwrap_or(10.0));
+    }
+
+    fn cycle_color(&mut self) {
+        if let Some(cloud) = &self.cloud {
+            let modes = ColorMode::available(cloud);
+            let next = modes
+                .iter()
+                .position(|m| *m == self.color)
+                .map_or(0, |i| (i + 1) % modes.len());
+            self.color = modes[next];
+        }
+    }
+
+    /// The cloud rendered at `width` x `height`, re-rendered only when the
+    /// cloud, the camera or the size changed since the last call.
+    pub fn render(
+        &self,
+        frame_seq: u64,
+        width: u32,
+        height: u32,
+        pixel_aspect: f32,
+    ) -> Option<Ref<'_, RenderedCloud>> {
+        let cloud = self.cloud.as_ref()?;
+        let key = RenderKey {
+            frame_seq,
+            camera: self.camera,
+            color: self.color,
+            grid: self.grid,
+            size: (width, height),
+        };
+        let stale = self.rendered.borrow().as_ref().is_none_or(|r| r.key != key);
+        if stale {
+            let options = RenderOptions {
+                camera: self.camera,
+                color: self.color,
+                grid: self.grid,
+                width,
+                height,
+                pixel_aspect,
+            };
+            let seq = self.rendered.borrow().as_ref().map_or(0, |r| r.seq + 1);
+            *self.rendered.borrow_mut() = Some(RenderedCloud {
+                image: cloud_render::render(cloud, &options),
+                seq,
+                key,
+            });
+        }
+        Ref::filter_map(self.rendered.borrow(), |r| r.as_ref()).ok()
+    }
+}
+
+/// State of the viewer for one topic.
+pub struct TopicView {
+    pub topic_name: String,
+    pub msg_type: String,
+    pub content: ViewContent,
+    /// Incremented for every new message, to tell when to redraw.
+    pub frame_seq: u64,
+    pub error: Option<String>,
+    pub max_fps: u32,
+    pub paused: bool,
+    /// Rate of the topic itself, from the helper's message counter.
+    pub topic_hz: Option<f64>,
+    /// Rate at which frames reach the display.
+    pub display_fps: Option<f64>,
+    pub last_frame_at: Option<Instant>,
+    /// Cells the image was laid out in by the last draw.
+    pub placement: Cell<Option<Rect>>,
+    pub target: Arc<ViewTarget>,
+    /// (messages received by the helper, arrival time) of recent frames.
+    rate_samples: VecDeque<(u32, Instant)>,
+    return_mode: AppMode,
+}
+
+impl TopicView {
+    fn on_frame(&mut self, frame: ViewFrame) {
+        let now = Instant::now();
+        // Rates over a window rather than averaged per-frame rates, which
+        // overstate the rate whenever frame intervals jitter.
+        self.rate_samples.push_back((frame.received_count, now));
+        while self.rate_samples.len() > 2
+            && now.duration_since(self.rate_samples[0].1) > VIEW_RATE_WINDOW
+        {
+            self.rate_samples.pop_front();
+        }
+        if let (Some(&(first_count, first_at)), Some(&(last_count, last_at))) =
+            (self.rate_samples.front(), self.rate_samples.back())
+        {
+            let span = last_at.duration_since(first_at).as_secs_f64();
+            if span > 0.0 {
+                let received = last_count.wrapping_sub(first_count) as f64;
+                self.topic_hz = Some(received / span);
+                self.display_fps = Some((self.rate_samples.len() - 1) as f64 / span);
+            }
+        }
+        self.last_frame_at = Some(now);
+        match (&mut self.content, frame.content) {
+            (ViewContent::Image(image), FrameContent::Image(new)) => *image = Some(new),
+            (ViewContent::Cloud(view), FrameContent::Cloud(cloud)) => view.set_cloud(cloud),
+            (ViewContent::Diagnostics(view), FrameContent::Diagnostics(statuses)) => {
+                view.table.update(statuses, now)
+            }
+            (ViewContent::Gnss(view), FrameContent::Gnss(fix)) => {
+                view.track.push(&fix);
+                view.fixes += 1;
+                view.latest = Some(fix);
+            }
+            (ViewContent::Imu(view), FrameContent::Imu(sample)) => {
+                view.history.push_back(ImuPoint {
+                    at: now,
+                    acceleration: sample.linear_acceleration,
+                    turn_rate: sample.angular_velocity,
+                });
+                while view
+                    .history
+                    .front()
+                    .is_some_and(|p| now.duration_since(p.at) > IMU_HISTORY)
+                {
+                    view.history.pop_front();
+                }
+                view.latest = Some(sample);
+            }
+            (
+                ViewContent::Tf(view),
+                FrameContent::Tf {
+                    transforms,
+                    is_static,
+                },
+            ) => {
+                let wall_now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0.0, |d| d.as_secs_f64());
+                view.tree.update(transforms, is_static, now, wall_now);
+            }
+            (ViewContent::Odometry(view), FrameContent::Odometry(odom)) => {
+                view.trail.push(&odom);
+                let odom = *odom;
+                view.history.push_back(OdometryPoint {
+                    at: now,
+                    linear: odom.linear,
+                    angular: odom.angular,
+                });
+                while view
+                    .history
+                    .front()
+                    .is_some_and(|p| now.duration_since(p.at) > IMU_HISTORY)
+                {
+                    view.history.pop_front();
+                }
+                view.latest = Some(odom);
+            }
+            (ViewContent::Path(view), FrameContent::Path(path)) => {
+                view.updates += 1;
+                view.latest = Some(path);
+            }
+            (ViewContent::Joints(view), FrameContent::Joints(states)) => {
+                view.table.update(states, now)
+            }
+            (ViewContent::Battery(view), FrameContent::Battery(state)) => {
+                view.history.push_back((
+                    now,
+                    battery::measured(state.voltage),
+                    battery::measured(state.current),
+                ));
+                while view
+                    .history
+                    .front()
+                    .is_some_and(|p| now.duration_since(p.0) > BATTERY_HISTORY)
+                {
+                    view.history.pop_front();
+                }
+                view.latest = Some(state);
+            }
+            _ => return,
+        }
+        self.frame_seq += 1;
+        self.error = None;
+    }
 }
 
 pub struct App {
@@ -32,7 +459,9 @@ pub struct App {
     pub visible_items: Vec<TopicTreeItem>,
 
     pub selected_index: usize,
-    pub scroll_offset: usize,
+    /// First row of the table on screen; the UI keeps it in step with the
+    /// selection and the terminal height.
+    pub scroll_offset: Cell<usize>,
 
     pub filter_text: String,
     pub search_text: String,
@@ -51,10 +480,14 @@ pub struct App {
     pub expansion_state: HashMap<String, bool>,
     pub use_sim_time: bool,
 
+    pub view: Option<TopicView>,
+    pub graphics: TerminalGraphics,
+    kitty: KittyPlacement,
+    /// Redraw the kitty image even if unchanged, e.g. after a resize cleared it.
+    force_graphics_redraw: bool,
+
     message_receiver: Receiver<TopicMessage>,
-    watch_sender: Sender<WatchMessage>,
-    topic_watcher: TopicWatcherHandle,
-    detail_watcher: TopicDetailWatcherHandle,
+    bridge: RosBridgeHandle,
 }
 
 impl App {
@@ -65,9 +498,7 @@ impl App {
     ) -> Self {
         let (topic_sender, topic_receiver) = crossbeam::channel::unbounded();
 
-        let topic_watcher =
-            TopicWatcherHandle::new(topic_sender.clone(), refresh_interval, initial_fetch);
-        let (detail_watcher, watch_sender) = TopicDetailWatcherHandle::new(topic_sender);
+        let bridge = RosBridgeHandle::new(topic_sender, refresh_interval, initial_fetch);
 
         Self {
             should_quit: false,
@@ -76,7 +507,7 @@ impl App {
             master_tree: TopicTree::new(),
             visible_items: Vec::new(),
             selected_index: 0,
-            scroll_offset: 0,
+            scroll_offset: Cell::new(0),
             filter_text: String::new(),
             search_text: String::new(),
             selected_topic_name: None,
@@ -89,10 +520,12 @@ impl App {
             last_animation_update: std::time::Instant::now(),
             expansion_state: HashMap::new(),
             use_sim_time: false,
+            view: None,
+            graphics: TerminalGraphics::default(),
+            kitty: KittyPlacement::default(),
+            force_graphics_redraw: false,
             message_receiver: topic_receiver,
-            watch_sender,
-            topic_watcher,
-            detail_watcher,
+            bridge,
         }
     }
 
@@ -117,6 +550,14 @@ impl App {
                         new_topic.hz_std_dev_history = existing.hz_std_dev_history.clone();
                         new_topic.delay_history = existing.delay_history.clone();
                         new_topic.delay_std_dev_history = existing.delay_std_dev_history.clone();
+                    }
+                }
+                // Keep watched topics a list misses, e.g. one taken before a
+                // restarted helper discovered everything: they are still
+                // being measured, and a vanished topic shows as 0 Hz.
+                for (name, existing) in &self.topic_map {
+                    if existing.watched && !new_map.contains_key(name) {
+                        new_map.insert(name.clone(), existing.clone());
                     }
                 }
                 self.topic_map = new_map;
@@ -196,32 +637,6 @@ impl App {
                     }
                 }
             }
-            TopicMessage::TopicHzStdDevUpdate {
-                topic_name,
-                std_dev,
-            } => {
-                if let Some(topic) = self.watched_topic_mut(&topic_name) {
-                    // Update the most recent std_dev value in history without adding new Hz data
-                    if !topic.hz_std_dev_history.is_empty() {
-                        let last_idx = topic.hz_std_dev_history.len() - 1;
-                        topic.hz_std_dev_history[last_idx] = std_dev;
-                        topic.hz_std_dev = Some(std_dev); // Update current std dev for display
-                    }
-                }
-            }
-            TopicMessage::TopicDelayStdDevUpdate {
-                topic_name,
-                std_dev,
-            } => {
-                if let Some(topic) = self.watched_topic_mut(&topic_name) {
-                    // Update the most recent std_dev value in history without adding new delay data
-                    if !topic.delay_std_dev_history.is_empty() {
-                        let last_idx = topic.delay_std_dev_history.len() - 1;
-                        topic.delay_std_dev_history[last_idx] = std_dev * 1000.0; // Convert to ms
-                        topic.delay_std_dev = Some(std_dev); // Update current std dev for display
-                    }
-                }
-            }
             TopicMessage::TopicEcho(line) => {
                 self.echo_content.push(line);
                 const MAX_ECHO_LINES: usize = 1000; // Increased from 200 for better history
@@ -242,6 +657,23 @@ impl App {
 
                 // Keep scroll at top by default - don't auto-scroll when new messages arrive
                 // User can manually scroll down if needed
+            }
+            TopicMessage::ViewFrame(frame) => {
+                if let Some(view) = self.view.as_mut() {
+                    if view.topic_name == frame.topic_name && !view.paused {
+                        view.on_frame(*frame);
+                    }
+                }
+            }
+            TopicMessage::ViewError {
+                topic_name,
+                message,
+            } => {
+                if let Some(view) = self.view.as_mut() {
+                    if view.topic_name == topic_name {
+                        view.error = Some(message);
+                    }
+                }
             }
             TopicMessage::Error(error) => {
                 self.error_message = Some(error);
@@ -314,7 +746,19 @@ impl App {
     }
 
     pub fn on_key(&mut self, c: char) {
-        if self.mode == AppMode::Search {
+        if self.mode == AppMode::TopicView {
+            match c {
+                'q' => self.close_view(),
+                'p' => {
+                    if let Some(view) = self.view.as_mut() {
+                        view.paused = !view.paused;
+                    }
+                }
+                '+' | '=' => self.step_view_fps(1),
+                '-' => self.step_view_fps(-1),
+                c => self.on_view_key(c),
+            }
+        } else if self.mode == AppMode::Search {
             self.search_text.push(c);
         } else {
             match c {
@@ -330,6 +774,7 @@ impl App {
                     }
                 }
                 'd' => self.enter_detail_view(),
+                'v' => self.open_view(),
                 'r' => self.refresh(),
                 's' => self.toggle_sim_time(),
                 '?' => self.mode = AppMode::Help,
@@ -382,6 +827,11 @@ impl App {
     }
 
     pub fn on_tab(&mut self) {
+        if let Some(cloud) = self.cloud_view_mut() {
+            let preset = cloud.camera.preset.next();
+            cloud.reset_camera(preset);
+            return;
+        }
         if self.mode == AppMode::TopicDetail {
             self.detail_focus = match self.detail_focus {
                 DetailPaneFocus::Info => DetailPaneFocus::Echo,
@@ -398,10 +848,14 @@ impl App {
 
     /// Fetch the topic list now instead of waiting for the next periodic refresh.
     pub fn refresh(&mut self) {
-        self.topic_watcher.refresh();
+        self.bridge.refresh();
     }
 
     pub fn on_left(&mut self) {
+        if let Some(cloud) = self.cloud_view_mut() {
+            cloud.camera.orbit(-ORBIT_STEP, 0.0);
+            return;
+        }
         if self.mode == AppMode::TopicDetail {
             // No action for left/right in detail view with combined panes
         } else if let Some(item) = self.get_selected_item() {
@@ -413,6 +867,10 @@ impl App {
     }
 
     pub fn on_right(&mut self) {
+        if let Some(cloud) = self.cloud_view_mut() {
+            cloud.camera.orbit(ORBIT_STEP, 0.0);
+            return;
+        }
         if self.mode == AppMode::TopicDetail {
             // No action for left/right in detail view with combined panes
         } else if let Some(item) = self.get_selected_item() {
@@ -425,10 +883,11 @@ impl App {
 
     pub fn on_escape(&mut self) {
         match self.mode {
+            AppMode::TopicView => self.close_view(),
             AppMode::Search | AppMode::Help | AppMode::TopicDetail => {
                 if self.is_echoing {
                     self.is_echoing = false;
-                    let _ = self.watch_sender.send(WatchMessage::StopEcho);
+                    let _ = self.bridge.send(WatchMessage::StopEcho);
                 }
                 self.mode = AppMode::TopicList;
             }
@@ -460,6 +919,231 @@ impl App {
                 self.mode = AppMode::TopicDetail;
             }
         }
+    }
+
+    /// Open the image viewer on the selected topic, from the topic list or
+    /// the detail view.
+    pub fn open_view(&mut self) {
+        let topic_name = match self.mode {
+            AppMode::TopicList => self
+                .get_selected_item()
+                .and_then(|item| item.get_topic_info())
+                .map(|topic| topic.name.clone()),
+            AppMode::TopicDetail => self.selected_topic_name.clone(),
+            _ => None,
+        };
+        let Some(topic) = topic_name.and_then(|name| self.topic_map.get(&name)) else {
+            return;
+        };
+        if !has_viewer(&topic.msg_type) {
+            self.error_message = Some(format!(
+                "No viewer for {} (supported: images, point clouds, laser scans, maps, \
+                 diagnostics, GNSS, IMU, TF, odometry, paths, joint states, batteries)",
+                topic.msg_type
+            ));
+            return;
+        }
+
+        let target = Arc::new(ViewTarget::default());
+        let view = TopicView {
+            topic_name: topic.name.clone(),
+            msg_type: topic.msg_type.clone(),
+            content: view_content(&topic.msg_type),
+            frame_seq: 0,
+            error: None,
+            max_fps: if diagnostics::is_diagnostics_type(&topic.msg_type)
+                || tf::is_tf_type(&topic.msg_type)
+                || joints::is_joint_state_type(&topic.msg_type)
+            {
+                UNTHROTTLED_FPS
+            } else if imu::is_imu_type(&topic.msg_type)
+                || odometry::is_odometry_type(&topic.msg_type)
+            {
+                DEFAULT_PLOT_FPS
+            } else {
+                DEFAULT_VIEW_FPS
+            },
+            paused: false,
+            topic_hz: None,
+            display_fps: None,
+            last_frame_at: None,
+            placement: Cell::new(None),
+            target: target.clone(),
+            rate_samples: VecDeque::new(),
+            return_mode: std::mem::replace(&mut self.mode, AppMode::TopicView),
+        };
+        // The TF tree needs both /tf and /tf_static.
+        let extra_topics = if tf::is_tf_type(&view.msg_type) {
+            tf::companion_topic(&view.topic_name).into_iter().collect()
+        } else {
+            vec![]
+        };
+        let _ = self.bridge.send(WatchMessage::StartViewStream {
+            topic_name: view.topic_name.clone(),
+            extra_topics,
+            msg_type: view.msg_type.clone(),
+            max_fps: view.max_fps,
+            target,
+        });
+        self.view = Some(view);
+    }
+
+    fn close_view(&mut self) {
+        if let Some(view) = self.view.take() {
+            let _ = self.bridge.send(WatchMessage::StopViewStream);
+            self.mode = view.return_mode;
+        }
+    }
+
+    fn cloud_view(&self) -> Option<&CloudView> {
+        if self.mode != AppMode::TopicView {
+            return None;
+        }
+        match self.view.as_ref().map(|v| &v.content) {
+            Some(ViewContent::Cloud(cloud)) => Some(cloud),
+            _ => None,
+        }
+    }
+
+    /// Whether the main loop should capture the mouse: only for wheel zoom in
+    /// the point cloud view, so text selection works everywhere else.
+    pub fn wants_mouse(&self) -> bool {
+        self.cloud_view().is_some()
+    }
+
+    /// Scroll wheel: zoom the point cloud view.
+    pub fn on_scroll(&mut self, up: bool) {
+        if let Some(cloud) = self.cloud_view_mut() {
+            let factor = if up {
+                1.0 / WHEEL_ZOOM_STEP
+            } else {
+                WHEEL_ZOOM_STEP
+            };
+            cloud.camera.zoom(factor);
+        }
+    }
+
+    fn cloud_view_mut(&mut self) -> Option<&mut CloudView> {
+        if self.mode != AppMode::TopicView {
+            return None;
+        }
+        match self.view.as_mut().map(|v| &mut v.content) {
+            Some(ViewContent::Cloud(cloud)) => Some(&mut **cloud),
+            _ => None,
+        }
+    }
+
+    fn view_selection_mut(&mut self) -> Option<&mut usize> {
+        if self.mode != AppMode::TopicView {
+            return None;
+        }
+        self.view.as_mut()?.content.selection_mut()
+    }
+
+    fn diagnostics_view_mut(&mut self) -> Option<&mut DiagnosticsView> {
+        if self.mode != AppMode::TopicView {
+            return None;
+        }
+        match self.view.as_mut().map(|v| &mut v.content) {
+            Some(ViewContent::Diagnostics(diag)) => Some(diag),
+            _ => None,
+        }
+    }
+
+    /// Point cloud keys: pan, color, grid and camera reset. Diagnostics:
+    /// `f` toggles showing only problems.
+    fn on_view_key(&mut self, c: char) {
+        if let Some(diag) = self.diagnostics_view_mut() {
+            if c == 'f' {
+                diag.problems_only = !diag.problems_only;
+                diag.selected = 0;
+            }
+            return;
+        }
+        let Some(cloud) = self.cloud_view_mut() else {
+            return;
+        };
+        match c {
+            'w' => cloud.camera.pan(1.0, 0.0),
+            's' => cloud.camera.pan(-1.0, 0.0),
+            'a' => cloud.camera.pan(0.0, -1.0),
+            'd' => cloud.camera.pan(0.0, 1.0),
+            'c' => cloud.cycle_color(),
+            'g' => cloud.grid = !cloud.grid,
+            'r' => cloud.reset_camera(cloud.camera.preset),
+            _ => {}
+        }
+    }
+
+    fn step_view_fps(&mut self, direction: isize) {
+        let Some(view) = self.view.as_mut() else {
+            return;
+        };
+        if view.content.is_unthrottled() {
+            return;
+        }
+        let current = VIEW_FPS_STEPS
+            .iter()
+            .position(|&fps| fps >= view.max_fps)
+            .unwrap_or(VIEW_FPS_STEPS.len() - 1);
+        let next = current
+            .saturating_add_signed(direction)
+            .min(VIEW_FPS_STEPS.len() - 1);
+        view.max_fps = VIEW_FPS_STEPS[next];
+        let _ = self.bridge.send(WatchMessage::SetViewFps(view.max_fps));
+    }
+
+    /// Main loop polling interval: short while images stream, so frames are
+    /// not held back waiting for input.
+    pub fn poll_interval(&self) -> Duration {
+        if self.mode == AppMode::TopicView {
+            Duration::from_millis(10)
+        } else {
+            Duration::from_millis(50)
+        }
+    }
+
+    pub fn on_resize(&mut self) {
+        self.force_graphics_redraw = true;
+    }
+
+    /// Bytes per second of image data sent to the terminal.
+    pub fn graphics_bytes_per_second(&self) -> usize {
+        self.kitty.bytes_per_second()
+    }
+
+    /// Write kitty graphics after a draw: show the current frame where the
+    /// UI laid it out, or remove the image once the viewer is closed.
+    pub fn sync_graphics(&mut self, out: &mut impl Write) -> io::Result<()> {
+        if self.graphics.protocol != GraphicsProtocol::Kitty {
+            return Ok(());
+        }
+        let force = std::mem::take(&mut self.force_graphics_redraw);
+        let view = self
+            .view
+            .as_ref()
+            .filter(|_| self.mode == AppMode::TopicView);
+        let Some((view, rect)) = view.and_then(|v| Some((v, v.placement.get()?))) else {
+            return self.kitty.clear(out);
+        };
+        match &view.content {
+            ViewContent::Image(Some(frame)) => {
+                self.kitty
+                    .show(out, &frame.rgb, view.frame_seq, rect, force)
+            }
+            ViewContent::Cloud(cloud) => match cloud.rendered.borrow().as_ref() {
+                Some(rendered) => self
+                    .kitty
+                    .show(out, &rendered.image, rendered.seq, rect, force),
+                None => self.kitty.clear(out),
+            },
+            _ => self.kitty.clear(out),
+        }
+    }
+
+    /// Remove any image from the terminal, e.g. before quitting.
+    pub fn clear_graphics(&mut self, out: &mut impl Write) -> io::Result<()> {
+        self.kitty.clear(out)
     }
 
     fn toggle_group_expansion(&mut self, group_path: &str) {
@@ -496,16 +1180,24 @@ impl App {
                     self.echo_content.clear();
                     self.echo_scroll_offset = 0;
                     let _ = self
-                        .watch_sender
+                        .bridge
                         .send(WatchMessage::StartEcho(topic_name.clone()));
                 } else {
-                    let _ = self.watch_sender.send(WatchMessage::StopEcho);
+                    let _ = self.bridge.send(WatchMessage::StopEcho);
                 }
             }
         }
     }
 
     pub fn on_up(&mut self) {
+        if self.mode == AppMode::TopicView {
+            if let Some(cloud) = self.cloud_view_mut() {
+                cloud.camera.orbit(0.0, ORBIT_STEP);
+            } else if let Some(selected) = self.view_selection_mut() {
+                *selected = selected.saturating_sub(1);
+            }
+            return;
+        }
         if self.mode == AppMode::TopicDetail {
             if self.detail_focus == DetailPaneFocus::Echo {
                 self.echo_scroll_offset = self.echo_scroll_offset.saturating_sub(1);
@@ -516,6 +1208,14 @@ impl App {
     }
 
     pub fn on_down(&mut self) {
+        if self.mode == AppMode::TopicView {
+            if let Some(cloud) = self.cloud_view_mut() {
+                cloud.camera.orbit(0.0, -ORBIT_STEP);
+            } else if let Some(selected) = self.view_selection_mut() {
+                *selected += 1;
+            }
+            return;
+        }
         if self.mode == AppMode::TopicDetail {
             if self.detail_focus == DetailPaneFocus::Echo {
                 // Constrain scroll to prevent excess whitespace
@@ -525,6 +1225,24 @@ impl App {
             }
         } else {
             self.select_next();
+        }
+    }
+
+    /// PgUp: the first topic in the list, or a page up in the echo pane.
+    pub fn on_page_up(&mut self) {
+        match self.mode {
+            AppMode::TopicList | AppMode::Search => self.selected_index = 0,
+            _ => self.echo_page_up(),
+        }
+    }
+
+    /// PgDn: the last topic in the list, or a page down in the echo pane.
+    pub fn on_page_down(&mut self) {
+        match self.mode {
+            AppMode::TopicList | AppMode::Search => {
+                self.selected_index = self.visible_items.len().saturating_sub(1)
+            }
+            _ => self.echo_page_down(),
         }
     }
 
@@ -556,8 +1274,7 @@ impl App {
     }
 
     pub fn shutdown(&mut self) {
-        self.topic_watcher.shutdown();
-        self.detail_watcher.shutdown();
+        self.bridge.shutdown();
     }
 
     fn get_selected_item(&self) -> Option<&TopicTreeItem> {
@@ -570,32 +1287,18 @@ impl App {
         } else if self.selected_index >= self.visible_items.len() {
             self.selected_index = self.visible_items.len() - 1;
         }
-        self.adjust_scroll();
     }
 
-    fn adjust_scroll(&mut self) {
-        const VISIBLE_HEIGHT: usize = 20; // Approximate visible height
-
-        if self.selected_index < self.scroll_offset {
-            self.scroll_offset = self.selected_index;
-        } else if self.selected_index >= self.scroll_offset + VISIBLE_HEIGHT {
-            self.scroll_offset = self.selected_index - VISIBLE_HEIGHT + 1;
-        }
-    }
-
+    /// Moves the selection down; stops at the last item.
     pub fn select_next(&mut self) {
-        if !self.visible_items.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.visible_items.len();
-            self.adjust_scroll();
+        if self.selected_index + 1 < self.visible_items.len() {
+            self.selected_index += 1;
         }
     }
 
+    /// Moves the selection up; stops at the first item.
     pub fn select_previous(&mut self) {
-        if !self.visible_items.is_empty() {
-            self.selected_index =
-                (self.selected_index + self.visible_items.len() - 1) % self.visible_items.len();
-            self.adjust_scroll();
-        }
+        self.selected_index = self.selected_index.saturating_sub(1);
     }
 
     pub fn toggle_watch_current_topic(&mut self) {
@@ -619,7 +1322,7 @@ impl App {
                 topic.delay_history.clear();
                 topic.delay_std_dev_history.clear();
                 let _ = self
-                    .watch_sender
+                    .bridge
                     .send(WatchMessage::StartContinuousMetrics(topic.name.clone()));
             } else {
                 topic.hz = None;
@@ -629,7 +1332,7 @@ impl App {
                 topic.hz_status = MeasurementStatus::NotMeasuring;
                 topic.delay_status = MeasurementStatus::NotMeasuring;
                 let _ = self
-                    .watch_sender
+                    .bridge
                     .send(WatchMessage::StopContinuousMetrics(topic.name.clone()));
             }
         }
@@ -652,7 +1355,7 @@ impl App {
         }
 
         let _ = self
-            .watch_sender
+            .bridge
             .send(WatchMessage::SetUseSimTime(self.use_sim_time));
     }
 
