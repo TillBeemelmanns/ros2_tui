@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/ros2_tui.svg)](https://crates.io/crates/ros2_tui)
 [![PyPI](https://img.shields.io/pypi/v/ros2-tui.svg)](https://pypi.org/project/ros2-tui/)
+[![ROS 2 Humble](https://img.shields.io/badge/ROS_2-Humble-22314E?logo=ros)](https://docs.ros.org/en/humble/)
+[![ROS 2 Lyrical](https://img.shields.io/badge/ROS_2-Lyrical-22314E?logo=ros)](https://docs.ros.org/en/lyrical/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Test](https://github.com/TillBeemelmanns/ros2_tui/actions/workflows/test.yml/badge.svg)](https://github.com/TillBeemelmanns/ros2_tui/actions/workflows/test.yml)
 [![Release](https://github.com/TillBeemelmanns/ros2_tui/actions/workflows/release.yml/badge.svg)](https://github.com/TillBeemelmanns/ros2_tui/actions/workflows/release.yml)
@@ -10,16 +12,39 @@ A powerful Terminal User Interface (TUI) for monitoring and managing ROS2 topics
 
 ## Screenshots
 
+<p align="center"><a href="assets/points.png"><img src="assets/points.png" alt="Point cloud viewer" width="90%"></a></p>
+<p align="center"><em>A 32-beam lidar in the point cloud viewer, drawn with kitty graphics in Ghostty.</em></p>
+
 <table>
   <tr>
-    <td width="33%"><a href="assets/topics_overview.png"><img src="assets/topics_overview.png" alt="Topic overview"></a></td>
-    <td width="33%"><a href="assets/topics_search.png"><img src="assets/topics_search.png" alt="Topic search"></a></td>
-    <td width="33%"><a href="assets/topics_detail.png"><img src="assets/topics_detail.png" alt="Topic details"></a></td>
+    <td width="33%"><a href="assets/topics.png"><img src="assets/topics.png" alt="Topic list"></a></td>
+    <td width="33%"><a href="assets/search.png"><img src="assets/search.png" alt="Topic search"></a></td>
+    <td width="33%"><a href="assets/details.png"><img src="assets/details.png" alt="Topic details"></a></td>
   </tr>
   <tr>
-    <td align="center">Namespace-aware topic tree with live publisher/subscriber counts, Hz, and delay.</td>
-    <td align="center">Fuzzy search to instantly filter topics across the graph.</td>
-    <td align="center">Per-topic detail view with Hz/delay history charts and live message echo.</td>
+    <td align="center">Topic tree with publisher/subscriber counts; <code>◉</code> marks topics with a viewer.</td>
+    <td align="center">Live search across all topics.</td>
+    <td align="center">Topic details with rate and delay charts and a live echo.</td>
+  </tr>
+  <tr>
+    <td width="33%"><a href="assets/image_raw.png"><img src="assets/image_raw.png" alt="Image viewer"></a></td>
+    <td width="33%"><a href="assets/tf.png"><img src="assets/tf.png" alt="TF tree viewer"></a></td>
+    <td width="33%"><a href="assets/diagnostics.png"><img src="assets/diagnostics.png" alt="Diagnostics viewer"></a></td>
+  </tr>
+  <tr>
+    <td align="center">Camera image in full resolution.</td>
+    <td align="center">TF tree with rates, ages, delays and poses.</td>
+    <td align="center">Diagnostics of all drivers, worst first, with stale detection.</td>
+  </tr>
+  <tr>
+    <td width="33%"><a href="assets/imu.png"><img src="assets/imu.png" alt="IMU viewer"></a></td>
+    <td width="33%"><a href="assets/joint_states.png"><img src="assets/joint_states.png" alt="Joint state viewer"></a></td>
+    <td width="33%"></td>
+  </tr>
+  <tr>
+    <td align="center">IMU with a gravity check against the orientation and 10 s plots.</td>
+    <td align="center">Joint states merged by name, with ranges and plots.</td>
+    <td></td>
   </tr>
 </table>
 
@@ -27,6 +52,20 @@ A powerful Terminal User Interface (TUI) for monitoring and managing ROS2 topics
 
 - ROS2 installed and sourced
 - `python3` with `rclpy`, which every ROS2 installation includes: each app does all its ROS access through one embedded `rclpy` helper, and neither runs the `ros2` CLI. No message packages are compiled into the binaries, so one build works on every distribution.
+
+## Terminal
+
+`ros2_tui` is developed and tested with [Ghostty](https://ghostty.org), locally and over SSH. Other terminals work, with these differences:
+
+- **Images, maps and point clouds in full resolution** need the [kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/). Ghostty supports it; kitty and WezTerm implement it too and should work, but are untested. Elsewhere (iTerm2, Terminal.app, GNOME Terminal, VS Code, and inside tmux or screen) images fall back to colored half blocks and point clouds to braille dots. Set `ROS2_TUI_GRAPHICS=kitty` or `ROS2_TUI_GRAPHICS=halfblocks` to override the detection.
+- **24-bit color** for the images and the colored half blocks.
+- **A font with box drawing and braille characters** for the tables, trees and plots; any common monospace font has them.
+- **A wide window**: around 160 columns shows every table column and the whole key bar. Smaller windows work but cut text off.
+- **Mouse wheel** zooms the point cloud viewer; the mouse is captured only while it is open, so text selection works everywhere else.
+
+### Over SSH
+- Kitty graphics work over SSH: frames are compressed, capped at 960x720 pixels and scaled up by the terminal, which keeps typical streams at a few MB/s. On slow links, lower a viewer's frame rate with `-`; the info line shows the bandwidth to the terminal.
+- With Ghostty, add `shell-integration-features = ssh-env,ssh-terminfo` to its config: the remote side then knows Ghostty's terminal type and that it supports 24-bit color, which plain `ssh` does not pass on.
 
 ## Installation
 
@@ -139,8 +178,7 @@ Press `v` on a topic marked `◉` to see its data. Common keys in every viewer: 
 ### Image Viewer
 - Supported encodings: `rgb8`, `bgr8`, `rgba8`, `bgra8`, `mono8`, `mono16`, 16-bit color, `yuv422`/`uyvy`, `yuv422_yuy2`/`yuyv`, `bayer_*8`, and depth (`16UC1`, `32FC1`) shown with a turbo colormap. Compressed images: JPEG, PNG and `compressedDepth`.
 - The info line shows the source size and encoding, the topic rate, the displayed frame rate and, with kitty graphics, the bandwidth to the terminal.
-- Images use the kitty graphics protocol when the terminal answers its query and fall back to colored half blocks otherwise (including inside tmux). Set `ROS2_TUI_GRAPHICS=kitty` or `ROS2_TUI_GRAPHICS=halfblocks` to override the detection.
-- Over SSH, frames are downscaled to at most 960x720 pixels and scaled up by the terminal, keeping bandwidth to a few MB/s at 10 fps. Lower the frame rate with `-` on slow links.
+- Images use the kitty graphics protocol when the terminal answers its query and fall back to colored half blocks otherwise; see [Terminal](#terminal).
 
 ### Point Cloud Viewer
 - Three views, cycled with `Tab`: **top** (orthographic bird's eye view, x up), **orbit** (perspective from behind the sensor) and **side**. The camera starts fitted to the cloud.
@@ -150,7 +188,6 @@ Press `v` on a topic marked `◉` to see its data. Common keys in every viewer: 
 - Points are shown in the cloud's own frame. Clouds over 200,000 points are sampled evenly for display; the counts refer to the whole cloud.
 - Without kitty graphics, clouds are drawn with braille dots (2x4 per cell).
 - `LaserScan` topics open in the same viewer: returns become points in the scan plane, colored by intensity or distance, and the info lines show the angle span and step, the range limits and the measured ranges. Ranges outside the limits count as invalid.
-- The mouse is captured only while this viewer is open, for the wheel; text selection works everywhere else.
 
 ### Map Viewer
 - `OccupancyGrid` topics (maps and costmaps) open in the image viewer with north up: free cells white, occupied black, unknown slate.
@@ -193,21 +230,6 @@ Press `v` on a topic marked `◉` to see its data. Common keys in every viewer: 
 - Cell voltages are shown as bars with their spread; the weakest cell is highlighted when the spread exceeds 50 mV.
 - Plots show voltage and current of the last 10 minutes.
 
-### Using It over SSH
-- Images, maps and point clouds use the kitty graphics protocol when the terminal supports it (Ghostty, kitty, WezTerm). It works over SSH: frames are compressed, capped at 960x720 pixels and scaled up by the terminal, which keeps typical streams at a few MB/s.
-- Everywhere else, including inside tmux, images fall back to colored half blocks and point clouds to braille dots. Set `ROS2_TUI_GRAPHICS=kitty` or `ROS2_TUI_GRAPHICS=halfblocks` to override the detection.
-- With Ghostty, add `shell-integration-features = ssh-env,ssh-terminfo` to its config: the remote side then knows Ghostty's terminal type and that it supports 24-bit color, which plain `ssh` does not pass on.
-- On slow links, lower a viewer's frame rate with `-`; the info line shows the bandwidth to the terminal.
-
-### Architecture Highlights
-- All ROS access goes through `ros_bridge.py`, one long-lived `rclpy` helper embedded in the binary, instead of a `ros2` CLI process per topic list, watched topic, echo and viewer. Commands go to it as JSON lines; it answers with framed JSON events and serialized messages.
-- The helper lists topics (without counting its own subscriptions), measures rate and header delay of watched topics over a 10 second window from raw messages, echoes messages as YAML and streams serialized messages to the viewers, throttled to their frame rate limit. Rust decodes those (XCDR1 and XCDR2) and renders them.
-- Subscriptions match the publishers' reliability and durability like `ros2 topic hz` does, and adopt them once publishers appear, so latched topics and large raw images arrive reliably.
-- If the helper exits, it is restarted and the watched topics, the echo and the open viewer are restored.
-- Crossbeam channels drive a non-blocking event loop that redraws at ~20 FPS (100 while a viewer is open) and processes input instantly
-- Watched topics maintain FIFO histories (including std dev) to power Bollinger-band charts and statistical readouts
-- Selective monitoring conserves system resources by spawning measurement processes only when needed
-
 ## Params TUI (`params`)
 
 ### Highlights
@@ -243,14 +265,6 @@ The app groups dotted parameter names into expandable namespaces so large graphs
 - `--no-initial-fetch` – Skip the initial parameter scan
 - `--verbose` / `-v` – Emit detailed logs to `params_debug.log`
 - `--help`, `--version` – Standard metadata flags
-
-### Architecture Highlights
-- All parameter access goes through `param_bridge.py`, one long-lived `rclpy` helper embedded in the binary, instead of a `ros2 param` process per node and request. It calls the nodes' `list_parameters`, `get_parameters` and `set_parameters` services directly, all nodes at once, and keeps its service clients between refreshes.
-- Nodes that do not answer within 5 seconds are left out of that refresh instead of holding it up.
-- Right after the start, the list is sent as nodes are discovered, so the first parameters show without waiting for the whole graph.
-- After a set or load, the helper reads the node's parameters back, so the table shows what the node accepted.
-- If the helper exits, it is restarted and requests made meanwhile are sent to the new one.
-- A `ParamTree` mirrors node hierarchies; all ROS interaction happens off the UI thread, keeping the interface responsive under load
 
 ## Development
 
@@ -289,16 +303,6 @@ git config core.hooksPath .githooks
 
 When you push a tag such as `v0.3.0`, the hook calls `scripts/check-release-version.sh` and verifies the tag matches the `Cargo.toml` version. The push is rejected if they diverge, keeping release tags in sync with the crate metadata.
 
-
-## Comparison with Other Tools
-
-| Tool | Language | Dependencies | Features | Performance |
-|------|----------|-------------|----------|-------------|
-| topics (ours) | Rust | rclpy | TUI, Real-time metrics, sensor viewers | ⚡ Fast & Easy |
-| params (ours) | Rust | rclpy | TUI, Parameter management | ⚡ Fast & Easy |
-| rqt_topic | Python | Full ROS2 + Qt | GUI, Rich features | 🐌 Heavy |
-| rviz2 | C++ | Full ROS2 + Qt + OpenGL | GUI, 3D visualization | 🖥️ Needs a display |
-| ros2 topic | Python | Full ROS2 | CLI only | 🚀 Fast but cumbersome |
 
 ## Contributing
 
