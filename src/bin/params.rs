@@ -123,6 +123,16 @@ where
                         {
                             app.on_down()
                         }
+                        KeyCode::PageUp
+                            if app.mode == AppMode::ParamList || app.mode == AppMode::Search =>
+                        {
+                            app.on_page_up()
+                        }
+                        KeyCode::PageDown
+                            if app.mode == AppMode::ParamList || app.mode == AppMode::Search =>
+                        {
+                            app.on_page_down()
+                        }
                         KeyCode::Left if app.mode == AppMode::ParamList => app.on_left(),
                         KeyCode::Right if app.mode == AppMode::ParamList => app.on_right(),
                         KeyCode::Left if app.mode == AppMode::SetParameter => {

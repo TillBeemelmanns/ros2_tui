@@ -4,6 +4,7 @@ pub mod graphics;
 pub mod param_tree;
 pub mod popup;
 pub mod ros_helper;
+pub mod scroll;
 pub mod terminal;
 pub mod topic_tree;
 pub mod tree;

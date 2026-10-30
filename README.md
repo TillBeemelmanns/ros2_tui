@@ -103,7 +103,7 @@ topics --refresh 10
 Toggling a row with `Enter` starts Hz/Delay measurement. Unwatched topics stay lightweight, ensuring responsive navigation even with hundreds of topics.
 
 ### Navigation & Controls
-- `↑`/`↓` or `j`/`k` move between topics; `←`/`→` or `h`/`l` collapse and expand namespaces
+- `↑`/`↓` or `j`/`k` move between topics, `PgUp`/`PgDn` jump to the first/last; `←`/`→` or `h`/`l` collapse and expand namespaces
 - `Enter` toggles watching on the focused topic or expands/collapses a group
 - `d` opens the detail view, where `Tab` switches between the info and echo panes; `c` collapses/expands all groups at once
 - `s` toggles simulation time when measuring delay metrics
@@ -228,7 +228,7 @@ params --refresh 2
 The app groups dotted parameter names into expandable namespaces so large graphs stay navigable. Value edits, dumps, and loads go through the parameter services of the nodes and report their outcome inline.
 
 ### Navigation & Controls
-- `↑`/`↓` or `j`/`k` move through nodes and parameters; `←`/`→` or `h`/`l` collapse/expand namespaces
+- `↑`/`↓` or `j`/`k` move through nodes and parameters, `PgUp`/`PgDn` jump to the first/last; `←`/`→` or `h`/`l` collapse/expand namespaces
 - `?` opens the help overlay; `F4` enters search mode with persistent filtering
 - `Space`, `r`, or `F5` refresh on demand; `Esc` exits dialogs, cancels search, or quits
 

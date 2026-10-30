@@ -25,7 +25,7 @@ use super::ros;
 use super::ros::MeasurementStatus;
 use super::tf::Issue;
 use crate::common::graphics::{Braille, GraphicsProtocol, Halfblocks};
-use crate::common::{TopicTree, TopicTreeItem};
+use crate::common::{scroll, TopicTree, TopicTreeItem};
 
 pub fn ui(f: &mut Frame, app: &App) {
     match app.mode {
@@ -60,6 +60,7 @@ fn render_help(f: &mut Frame) {
         )),
         Line::from("    ↑ / k       - Move selection up"),
         Line::from("    ↓ / j       - Move selection down"),
+        Line::from("    PgUp / PgDn - Jump to the first / last topic"),
         Line::from("    ← / h       - Collapse selected group"),
         Line::from("    → / l       - Expand selected group"),
         Line::from(""),
@@ -224,6 +225,8 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     } else {
         let mut base = vec![
             Span::raw("↑↓/jk Navigate | "),
+            Span::styled("PgUp/PgDn", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(": Top/Bottom | "),
             Span::styled("Enter", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(": Watch/Expand | "),
             Span::styled("d", Style::default().add_modifier(Modifier::BOLD)),
@@ -1485,17 +1488,14 @@ fn render_topic_detail(f: &mut Frame, app: &App) {
 }
 
 fn render_topic_table(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let table_height = area.height.saturating_sub(2) as usize;
-    let mut scroll_offset = app.scroll_offset;
-    if app.selected_index >= scroll_offset.saturating_add(table_height) {
-        scroll_offset = app
-            .selected_index
-            .saturating_sub(table_height)
-            .saturating_add(1);
-    }
-    if app.selected_index < scroll_offset {
-        scroll_offset = app.selected_index;
-    }
+    let table_height = scroll::table_rows(area);
+    let scroll_offset = scroll::scroll_offset(
+        app.scroll_offset.get(),
+        app.selected_index,
+        app.visible_items.len(),
+        table_height,
+    );
+    app.scroll_offset.set(scroll_offset);
 
     let visible_items: Vec<&TopicTreeItem> = app
         .visible_items
@@ -1606,6 +1606,7 @@ fn render_topic_table(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let mut state = ratatui::widgets::TableState::default();
     state.select(Some(app.selected_index.saturating_sub(scroll_offset)));
     f.render_stateful_widget(table, area, &mut state);
+    scroll::render_table_scrollbar(f, area, app.visible_items.len(), scroll_offset);
 }
 
 /// Marks topics that `v` can open in a viewer.
@@ -1699,16 +1700,14 @@ fn render_search_table(
     selected_index: usize,
     area: ratatui::layout::Rect,
 ) {
-    let table_height = area.height.saturating_sub(2) as usize;
-    let mut scroll_offset: usize = 0;
-    if selected_index >= scroll_offset.saturating_add(table_height) {
-        scroll_offset = selected_index
-            .saturating_sub(table_height)
-            .saturating_add(1);
-    }
-    if selected_index < scroll_offset {
-        scroll_offset = selected_index;
-    }
+    let table_height = scroll::table_rows(area);
+    let scroll_offset = scroll::scroll_offset(
+        app.scroll_offset.get(),
+        selected_index,
+        visible_items.len(),
+        table_height,
+    );
+    app.scroll_offset.set(scroll_offset);
 
     let visible_slice: Vec<&TopicTreeItem> = visible_items
         .iter()
@@ -1816,6 +1815,7 @@ fn render_search_table(
     let mut state = ratatui::widgets::TableState::default();
     state.select(Some(selected_index.saturating_sub(scroll_offset)));
     f.render_stateful_widget(table, area, &mut state);
+    scroll::render_table_scrollbar(f, area, visible_items.len(), scroll_offset);
 }
 
 /// Format seconds as "1.2s", or "-" for none.

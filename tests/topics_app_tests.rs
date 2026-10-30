@@ -94,3 +94,28 @@ fn test_expand_all_survives_refresh() {
     app.handle_message(topics(&list));
     assert_eq!(app.visible_items.len(), expanded_rows);
 }
+
+#[test]
+fn test_selection_stops_at_the_ends() {
+    let mut app = app();
+    app.handle_message(topics(&["/a_topic", "/b_topic"]));
+    let last = app.visible_items.len() - 1;
+
+    app.on_up();
+    assert_eq!(app.selected_index, 0);
+
+    app.selected_index = last;
+    app.on_down();
+    assert_eq!(app.selected_index, last);
+}
+
+#[test]
+fn test_page_keys_jump_to_the_ends() {
+    let mut app = app();
+    app.handle_message(topics(&["/a_topic", "/b_topic"]));
+
+    app.on_page_down();
+    assert_eq!(app.selected_index, app.visible_items.len() - 1);
+    app.on_page_up();
+    assert_eq!(app.selected_index, 0);
+}

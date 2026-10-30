@@ -2,6 +2,7 @@ use super::ros;
 use super::watcher::{ParamBridgeHandle, ParamMessage, ParamWatchMessage};
 use crate::common::{ParamTree, ParamTreeItem};
 use crossbeam::channel::Receiver;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -44,7 +45,9 @@ pub struct ParamsApp {
     pub visible_items: Vec<ParamTreeItem>,
 
     pub selected_index: usize,
-    pub scroll_offset: usize,
+    /// First row of the table on screen; the UI keeps it in step with the
+    /// selection and the terminal height.
+    pub scroll_offset: Cell<usize>,
 
     pub filter_text: String,
     pub search_text: String,
@@ -90,7 +93,7 @@ impl ParamsApp {
             master_tree: ParamTree::new(),
             visible_items: Vec::new(),
             selected_index: 0,
-            scroll_offset: 0,
+            scroll_offset: Cell::new(0),
             filter_text: String::new(),
             search_text: String::new(),
             selected_param_key: None,
@@ -349,21 +352,25 @@ impl ParamsApp {
         }
     }
 
-    pub fn on_up(&mut self) {
-        if !self.visible_items.is_empty() {
-            if self.selected_index > 0 {
-                self.selected_index -= 1;
-            } else {
-                self.selected_index = self.visible_items.len() - 1;
-            }
-            self.adjust_scroll();
-        }
+    /// PgUp: the first item.
+    pub fn on_page_up(&mut self) {
+        self.selected_index = 0;
     }
 
+    /// PgDn: the last item.
+    pub fn on_page_down(&mut self) {
+        self.selected_index = self.visible_items.len().saturating_sub(1);
+    }
+
+    /// Moves the selection up; stops at the first item.
+    pub fn on_up(&mut self) {
+        self.selected_index = self.selected_index.saturating_sub(1);
+    }
+
+    /// Moves the selection down; stops at the last item.
     pub fn on_down(&mut self) {
-        if !self.visible_items.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.visible_items.len();
-            self.adjust_scroll();
+        if self.selected_index + 1 < self.visible_items.len() {
+            self.selected_index += 1;
         }
     }
 
@@ -725,17 +732,6 @@ impl ParamsApp {
             self.selected_index = 0;
         } else if self.selected_index >= self.visible_items.len() {
             self.selected_index = self.visible_items.len() - 1;
-        }
-        self.adjust_scroll();
-    }
-
-    pub fn adjust_scroll(&mut self) {
-        const VISIBLE_HEIGHT: usize = 20; // Approximate visible height
-
-        if self.selected_index < self.scroll_offset {
-            self.scroll_offset = self.selected_index;
-        } else if self.selected_index >= self.scroll_offset + VISIBLE_HEIGHT {
-            self.scroll_offset = self.selected_index - VISIBLE_HEIGHT + 1;
         }
     }
 

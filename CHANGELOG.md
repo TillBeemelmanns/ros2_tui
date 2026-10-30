@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Params: array types show as `Integer[]`, `Double[]` and so on.
 
 ### Fixed
+- Topics and params: moving past the first or last item no longer wraps
+  around to the other end of the list; `PgUp`/`PgDn` jump to the first and
+  last item instead.
+- Topics and params: the list uses the full terminal height and scrolls
+  only as far as needed to keep the selection on screen, with a scrollbar on
+  its right border. It assumed a 20-row screen before, so on taller
+  terminals it jumped back towards the top and left rows unused, and
+  collapsing groups no longer leaves empty rows while items above are hidden.
 - Params: a failed set stays on screen until it expires; the next periodic
   refresh hid it within seconds.
 - Params: the live tests wait for the test nodes to be discovered, which

@@ -459,7 +459,9 @@ pub struct App {
     pub visible_items: Vec<TopicTreeItem>,
 
     pub selected_index: usize,
-    pub scroll_offset: usize,
+    /// First row of the table on screen; the UI keeps it in step with the
+    /// selection and the terminal height.
+    pub scroll_offset: Cell<usize>,
 
     pub filter_text: String,
     pub search_text: String,
@@ -505,7 +507,7 @@ impl App {
             master_tree: TopicTree::new(),
             visible_items: Vec::new(),
             selected_index: 0,
-            scroll_offset: 0,
+            scroll_offset: Cell::new(0),
             filter_text: String::new(),
             search_text: String::new(),
             selected_topic_name: None,
@@ -1226,6 +1228,24 @@ impl App {
         }
     }
 
+    /// PgUp: the first topic in the list, or a page up in the echo pane.
+    pub fn on_page_up(&mut self) {
+        match self.mode {
+            AppMode::TopicList | AppMode::Search => self.selected_index = 0,
+            _ => self.echo_page_up(),
+        }
+    }
+
+    /// PgDn: the last topic in the list, or a page down in the echo pane.
+    pub fn on_page_down(&mut self) {
+        match self.mode {
+            AppMode::TopicList | AppMode::Search => {
+                self.selected_index = self.visible_items.len().saturating_sub(1)
+            }
+            _ => self.echo_page_down(),
+        }
+    }
+
     pub fn echo_page_up(&mut self) {
         if self.mode == AppMode::TopicDetail && self.detail_focus == DetailPaneFocus::Echo {
             let page_size = 10; // Scroll 10 lines at a time
@@ -1267,32 +1287,18 @@ impl App {
         } else if self.selected_index >= self.visible_items.len() {
             self.selected_index = self.visible_items.len() - 1;
         }
-        self.adjust_scroll();
     }
 
-    fn adjust_scroll(&mut self) {
-        const VISIBLE_HEIGHT: usize = 20; // Approximate visible height
-
-        if self.selected_index < self.scroll_offset {
-            self.scroll_offset = self.selected_index;
-        } else if self.selected_index >= self.scroll_offset + VISIBLE_HEIGHT {
-            self.scroll_offset = self.selected_index - VISIBLE_HEIGHT + 1;
-        }
-    }
-
+    /// Moves the selection down; stops at the last item.
     pub fn select_next(&mut self) {
-        if !self.visible_items.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.visible_items.len();
-            self.adjust_scroll();
+        if self.selected_index + 1 < self.visible_items.len() {
+            self.selected_index += 1;
         }
     }
 
+    /// Moves the selection up; stops at the first item.
     pub fn select_previous(&mut self) {
-        if !self.visible_items.is_empty() {
-            self.selected_index =
-                (self.selected_index + self.visible_items.len() - 1) % self.visible_items.len();
-            self.adjust_scroll();
-        }
+        self.selected_index = self.selected_index.saturating_sub(1);
     }
 
     pub fn toggle_watch_current_topic(&mut self) {
