@@ -7,45 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- Topics: all ROS access goes through one long-lived `rclpy` helper instead
-  of a `ros2` CLI process per topic list refresh, watched topic (`hz` and
-  `delay`), echo and viewer. Watching a topic no longer starts two processes
-  of about 100 MB each, and its first rate shows after about a second
-  instead of three.
-- Topics: rates and delays are measured over the last 10 seconds, so a topic
-  that stops publishing drops to 0 Hz instead of keeping its old rate.
-- Topics: subscriber counts no longer include the app's own subscriptions.
-- Topics: the echo pane shows at most 20 messages per second.
-- Params: all parameter access goes through one long-lived `rclpy` helper
-  that calls the nodes' parameter services directly, instead of a
-  `ros2 node list` plus a `ros2 param dump`, `set` or `load` process per
-  node and request. A refresh queries all nodes at once, a node that does
-  not answer is skipped after 5 seconds, and the first parameters show as
-  soon as nodes are discovered. Neither app needs the `ros2` CLI any more.
-- Params: setting a value keeps the parameter's type where it can: an
-  integer sets a double parameter, and any text sets a string parameter.
-- Params: array types show as `Integer[]`, `Double[]` and so on.
+## [0.2.0] - 2026-10-30
 
-### Fixed
-- Topics and params: moving past the first or last item no longer wraps
-  around to the other end of the list; `PgUp`/`PgDn` jump to the first and
-  last item instead.
-- Topics and params: the list uses the full terminal height and scrolls
-  only as far as needed to keep the selection on screen, with a scrollbar on
-  its right border. It assumed a 20-row screen before, so on taller
-  terminals it jumped back towards the top and left rows unused, and
-  collapsing groups no longer leaves empty rows while items above are hidden.
-- Params: a failed set stays on screen until it expires; the next periodic
-  refresh hid it within seconds.
-- Params: the live tests wait for the test nodes to be discovered, which
-  made them fail in CI.
-- Params: `Ctrl+l` opens the load dialog; the `l` navigation key took it before.
-- Params: loading a dump skips parameters that already have the file's
-  value, so read-only parameters no longer make it fail.
-- Topics: if the ROS helper exits, it is restarted and the watched topics,
-  echo and open viewer are restored; watched topics stay listed even if a
-  topic list misses them.
+Sensor viewers and no more `ros2` CLI: `v` opens a viewer for images, point
+clouds, scans, maps, GNSS, IMU, diagnostics, TF, odometry, paths, joint
+states and batteries, and both apps do all ROS access through one
+long-lived `rclpy` helper instead of starting `ros2` processes.
 
 ### Added
 - Topics: TF tree viewer for `/tf` and `/tf_static`: frames as a tree with
@@ -94,7 +61,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `nav_publisher` node publishing a latched map, a costmap, a GNSS fix and an
   IMU, all started by `dummy_publishers.launch.py`.
 
+### Changed
+- Topics: all ROS access goes through one long-lived `rclpy` helper instead
+  of a `ros2` CLI process per topic list refresh, watched topic (`hz` and
+  `delay`), echo and viewer. Watching a topic no longer starts two processes
+  of about 100 MB each, and its first rate shows after about a second
+  instead of three.
+- Topics: rates and delays are measured over the last 10 seconds, so a topic
+  that stops publishing drops to 0 Hz instead of keeping its old rate.
+- Topics: subscriber counts no longer include the app's own subscriptions.
+- Topics: the echo pane shows at most 20 messages per second.
+- Params: all parameter access goes through one long-lived `rclpy` helper
+  that calls the nodes' parameter services directly, instead of a
+  `ros2 node list` plus a `ros2 param dump`, `set` or `load` process per
+  node and request. A refresh queries all nodes at once, a node that does
+  not answer is skipped after 5 seconds, and the first parameters show as
+  soon as nodes are discovered. Neither app needs the `ros2` CLI any more.
+- Params: setting a value keeps the parameter's type where it can: an
+  integer sets a double parameter, and any text sets a string parameter.
+- Params: array types show as `Integer[]`, `Double[]` and so on.
+
 ### Fixed
+- Topics and params: moving past the first or last item no longer wraps
+  around to the other end of the list; `PgUp`/`PgDn` jump to the first and
+  last item instead.
+- Topics and params: the list uses the full terminal height and scrolls
+  only as far as needed to keep the selection on screen, with a scrollbar on
+  its right border. It assumed a 20-row screen before, so on taller
+  terminals it jumped back towards the top and left rows unused, and
+  collapsing groups no longer leaves empty rows while items above are hidden.
+- Params: a failed set stays on screen until it expires; the next periodic
+  refresh hid it within seconds.
+- Params: the live tests wait for the test nodes to be discovered, which
+  made them fail in CI.
+- Params: `Ctrl+l` opens the load dialog; the `l` navigation key took it before.
+- Params: loading a dump skips parameters that already have the file's
+  value, so read-only parameters no longer make it fail.
+- Topics: if the ROS helper exits, it is restarted and the watched topics,
+  echo and open viewer are restored; watched topics stay listed even if a
+  topic list misses them.
 - Test fixtures: `multi_publisher` now publishes real JPEG camera images,
   point clouds with x/y/z fields and valid `32FC1` depth images instead of
   placeholder bytes, and builds the depth image with numpy instead of a
@@ -217,7 +222,8 @@ Releases [0.1.0] through [0.1.4] predate this changelog. See the
 [GitHub releases](https://github.com/TillBeemelmanns/ros2_tui/releases) for
 their history.
 
-[Unreleased]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.10...v0.2.0
 [0.1.10]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/TillBeemelmanns/ros2_tui/compare/v0.1.7...v0.1.8

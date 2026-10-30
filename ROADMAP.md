@@ -8,20 +8,20 @@ See [CHANGELOG.md](CHANGELOG.md) for what has already shipped.
 
 - ✅ **One long-lived `rclpy` helper for all ROS access** — replaces the
   `ros2 topic list`/`hz`/`delay`/`echo` processes and the per-viewer helper;
-  restarts itself with its state if it exits (unreleased).
+  restarts itself with its state if it exits (0.2.0).
 - ✅ **TF, odometry, path, joint state and battery viewers** — the TF tree
   from `/tf` and `/tf_static` with rates, ages and stale frames, frames with
   two parents and cycles; odometry with trail, jumps and velocity plots;
   paths; merged joint tables with plots; battery charge, cells and plots
-  (unreleased).
+  (0.2.0).
 - ✅ **Params app through an `rclpy` helper** — neither app runs the `ros2`
-  CLI any more (unreleased).
+  CLI any more (0.2.0).
 - ✅ **Sensor viewers** — `v` opens a viewer for images, compressed images,
   maps and costmaps, point clouds, laser scans, GNSS fixes, IMUs and
-  diagnostics, with kitty graphics over SSH and text fallbacks (unreleased).
+  diagnostics, with kitty graphics over SSH and text fallbacks (0.2.0).
 - ✅ **Realistic test publishers** — real JPEG cameras, a simulated lidar and
   2D scanner, a latched map, GNSS, IMU and diagnostics replace placeholder
-  bytes (unreleased).
+  bytes (0.2.0).
 - ✅ **Parallel per-node parameter fetch** — a params refresh dumps up to 8
   nodes concurrently (0.1.9).
 - ✅ **Multi-distro ROS2 CI** — the integration job runs on Humble and
@@ -66,8 +66,6 @@ Next message types, ordered by how much they help check a robot over SSH:
   services, actions and TF as tabs of one app, sharing the terminal setup
   and the event loop that `topics` and `params` duplicate today; the
   existing binaries stay as shortcuts to their tab.
-- [ ] **Release 0.2.0** — leaving the `ros2` CLI behind and the viewers are a
-  milestone worth a minor version, with the recording above.
 - [ ] **Services app** — browse/list/call ROS2 services (mirrors the topics/params TUIs).
 - [ ] **Actions app** — browse/send/monitor ROS2 actions.
 - [ ] **Config file & theme support** — persist refresh rates, timeout, and color
