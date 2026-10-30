@@ -8,13 +8,12 @@ use super::pointcloud::{self, PointCloud};
 use super::ros;
 use super::ros::MeasurementStatus;
 use super::watcher::{
-    FrameContent, TopicDetailWatcherHandle, TopicMessage, TopicWatcherHandle, ViewFrame,
-    ViewTarget, WatchMessage,
+    FrameContent, RosBridgeHandle, TopicMessage, ViewFrame, ViewTarget, WatchMessage,
 };
 use crate::common::graphics::{GraphicsProtocol, KittyPlacement, TerminalGraphics};
 use crate::common::{TopicTree, TopicTreeItem};
 use ::image::RgbImage;
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::channel::Receiver;
 use ratatui::layout::Rect;
 use std::cell::{Cell, Ref, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -340,9 +339,7 @@ pub struct App {
     force_graphics_redraw: bool,
 
     message_receiver: Receiver<TopicMessage>,
-    watch_sender: Sender<WatchMessage>,
-    topic_watcher: TopicWatcherHandle,
-    detail_watcher: TopicDetailWatcherHandle,
+    bridge: RosBridgeHandle,
 }
 
 impl App {
@@ -353,9 +350,7 @@ impl App {
     ) -> Self {
         let (topic_sender, topic_receiver) = crossbeam::channel::unbounded();
 
-        let topic_watcher =
-            TopicWatcherHandle::new(topic_sender.clone(), refresh_interval, initial_fetch);
-        let (detail_watcher, watch_sender) = TopicDetailWatcherHandle::new(topic_sender);
+        let bridge = RosBridgeHandle::new(topic_sender, refresh_interval, initial_fetch);
 
         Self {
             should_quit: false,
@@ -382,9 +377,7 @@ impl App {
             kitty: KittyPlacement::default(),
             force_graphics_redraw: false,
             message_receiver: topic_receiver,
-            watch_sender,
-            topic_watcher,
-            detail_watcher,
+            bridge,
         }
     }
 
@@ -409,6 +402,14 @@ impl App {
                         new_topic.hz_std_dev_history = existing.hz_std_dev_history.clone();
                         new_topic.delay_history = existing.delay_history.clone();
                         new_topic.delay_std_dev_history = existing.delay_std_dev_history.clone();
+                    }
+                }
+                // Keep watched topics a list misses, e.g. one taken before a
+                // restarted helper discovered everything: they are still
+                // being measured, and a vanished topic shows as 0 Hz.
+                for (name, existing) in &self.topic_map {
+                    if existing.watched && !new_map.contains_key(name) {
+                        new_map.insert(name.clone(), existing.clone());
                     }
                 }
                 self.topic_map = new_map;
@@ -485,32 +486,6 @@ impl App {
                 if let Some(topic) = self.watched_topic_mut(&topic_name) {
                     if !matches!(topic.delay_status, MeasurementStatus::HasValue) {
                         topic.delay_status = status;
-                    }
-                }
-            }
-            TopicMessage::TopicHzStdDevUpdate {
-                topic_name,
-                std_dev,
-            } => {
-                if let Some(topic) = self.watched_topic_mut(&topic_name) {
-                    // Update the most recent std_dev value in history without adding new Hz data
-                    if !topic.hz_std_dev_history.is_empty() {
-                        let last_idx = topic.hz_std_dev_history.len() - 1;
-                        topic.hz_std_dev_history[last_idx] = std_dev;
-                        topic.hz_std_dev = Some(std_dev); // Update current std dev for display
-                    }
-                }
-            }
-            TopicMessage::TopicDelayStdDevUpdate {
-                topic_name,
-                std_dev,
-            } => {
-                if let Some(topic) = self.watched_topic_mut(&topic_name) {
-                    // Update the most recent std_dev value in history without adding new delay data
-                    if !topic.delay_std_dev_history.is_empty() {
-                        let last_idx = topic.delay_std_dev_history.len() - 1;
-                        topic.delay_std_dev_history[last_idx] = std_dev * 1000.0; // Convert to ms
-                        topic.delay_std_dev = Some(std_dev); // Update current std dev for display
                     }
                 }
             }
@@ -725,7 +700,7 @@ impl App {
 
     /// Fetch the topic list now instead of waiting for the next periodic refresh.
     pub fn refresh(&mut self) {
-        self.topic_watcher.refresh();
+        self.bridge.refresh();
     }
 
     pub fn on_left(&mut self) {
@@ -764,7 +739,7 @@ impl App {
             AppMode::Search | AppMode::Help | AppMode::TopicDetail => {
                 if self.is_echoing {
                     self.is_echoing = false;
-                    let _ = self.watch_sender.send(WatchMessage::StopEcho);
+                    let _ = self.bridge.send(WatchMessage::StopEcho);
                 }
                 self.mode = AppMode::TopicList;
             }
@@ -843,7 +818,7 @@ impl App {
             rate_samples: VecDeque::new(),
             return_mode: std::mem::replace(&mut self.mode, AppMode::TopicView),
         };
-        let _ = self.watch_sender.send(WatchMessage::StartViewStream {
+        let _ = self.bridge.send(WatchMessage::StartViewStream {
             topic_name: view.topic_name.clone(),
             msg_type: view.msg_type.clone(),
             max_fps: view.max_fps,
@@ -854,7 +829,7 @@ impl App {
 
     fn close_view(&mut self) {
         if let Some(view) = self.view.take() {
-            let _ = self.watch_sender.send(WatchMessage::StopViewStream);
+            let _ = self.bridge.send(WatchMessage::StopViewStream);
             self.mode = view.return_mode;
         }
     }
@@ -947,9 +922,7 @@ impl App {
             .saturating_add_signed(direction)
             .min(VIEW_FPS_STEPS.len() - 1);
         view.max_fps = VIEW_FPS_STEPS[next];
-        let _ = self
-            .watch_sender
-            .send(WatchMessage::SetViewFps(view.max_fps));
+        let _ = self.bridge.send(WatchMessage::SetViewFps(view.max_fps));
     }
 
     /// Main loop polling interval: short while images stream, so frames are
@@ -1042,10 +1015,10 @@ impl App {
                     self.echo_content.clear();
                     self.echo_scroll_offset = 0;
                     let _ = self
-                        .watch_sender
+                        .bridge
                         .send(WatchMessage::StartEcho(topic_name.clone()));
                 } else {
-                    let _ = self.watch_sender.send(WatchMessage::StopEcho);
+                    let _ = self.bridge.send(WatchMessage::StopEcho);
                 }
             }
         }
@@ -1118,8 +1091,7 @@ impl App {
     }
 
     pub fn shutdown(&mut self) {
-        self.topic_watcher.shutdown();
-        self.detail_watcher.shutdown();
+        self.bridge.shutdown();
     }
 
     fn get_selected_item(&self) -> Option<&TopicTreeItem> {
@@ -1181,7 +1153,7 @@ impl App {
                 topic.delay_history.clear();
                 topic.delay_std_dev_history.clear();
                 let _ = self
-                    .watch_sender
+                    .bridge
                     .send(WatchMessage::StartContinuousMetrics(topic.name.clone()));
             } else {
                 topic.hz = None;
@@ -1191,7 +1163,7 @@ impl App {
                 topic.hz_status = MeasurementStatus::NotMeasuring;
                 topic.delay_status = MeasurementStatus::NotMeasuring;
                 let _ = self
-                    .watch_sender
+                    .bridge
                     .send(WatchMessage::StopContinuousMetrics(topic.name.clone()));
             }
         }
@@ -1214,7 +1186,7 @@ impl App {
         }
 
         let _ = self
-            .watch_sender
+            .bridge
             .send(WatchMessage::SetUseSimTime(self.use_sim_time));
     }
 

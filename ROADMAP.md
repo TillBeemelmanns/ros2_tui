@@ -6,6 +6,9 @@ See [CHANGELOG.md](CHANGELOG.md) for what has already shipped.
 
 ## Recently shipped
 
+- ✅ **One long-lived `rclpy` helper for all ROS access** — replaces the
+  `ros2 topic list`/`hz`/`delay`/`echo` processes and the per-viewer helper;
+  restarts itself with its state if it exits (unreleased).
 - ✅ **Sensor viewers** — `v` opens a viewer for images, compressed images,
   maps and costmaps, point clouds, laser scans, GNSS fixes, IMUs and
   diagnostics, with kitty graphics over SSH and text fallbacks (unreleased).
@@ -66,22 +69,17 @@ Next message types, ordered by how much they help check a robot over SSH:
 - [ ] **Dedicated `Timeout` error variant** — currently a timeout surfaces as a
   generic `ParamError::Io`/`TopicError::Io`; a distinct variant gives clearer
   in-UI messaging ("node X timed out") vs. real I/O failures.
-- [ ] **Liveness detection for streaming children** — the long-lived
-  `ros2 topic echo` process has no staleness/restart logic if it silently
-  dies; detect and re-spawn or flag it. Viewers show when their helper ends,
-  but do not restart it.
-- [ ] **Graceful mid-session loss of `ros2`** — the binaries only check
+- [ ] **Detect a hung helper** — a helper that exits is restarted, but one
+  that hangs (e.g. blocked in a callback) is not noticed; a heartbeat event
+  would let the app restart it too.
+- [ ] **Graceful mid-session loss of `ros2`** — `params` only checks
   `ros2 --help` at startup; handle the CLI/daemon disappearing while running.
 
 ## Architecture
 
-- [ ] **One long-lived `rclpy` helper for all ROS access** — today every
-  watched topic starts its own `ros2 topic hz` and `ros2 topic delay` (about
-  100 MB and 2.7 s to the first rate each, measured on Lyrical), and every
-  viewer its own `message_stream.py` (96 MB, 0.3 s). One helper process
-  serving all subscriptions, rates, delays and the topic list over a single
-  pipe would cut memory and startup by an order of magnitude when watching
-  many topics, and make liveness handling simpler.
+- [ ] **Params app through the helper too** — `params` still runs a `ros2
+  param` process per list, dump, get and set; serving those from the same
+  kind of helper would speed up refreshes on large graphs.
 - [ ] **Optional Python-free transport** — receive the serialized messages
   directly with a pure-Rust DDS implementation (e.g. RustDDS) and a Zenoh
   client for `rmw_zenoh`. The Rust side already decodes CDR, so this would
@@ -104,8 +102,8 @@ Next message types, ordered by how much they help check a robot over SSH:
 - [ ] **Wire the live ROS2 tests into CI** — `tests/params_live_ros_tests.rs` is
   `#[ignore]`d; add a CI job that runs it (and topic equivalents) inside the
   Docker image so the real `ros2` integration path is exercised on every PR.
-- [ ] **Topic-side live integration tests** — mirror the params live tests for
-  `get_topic_list` and the hz/delay parsers against the dummy publishers.
+- [ ] **Topic-side live integration tests** — start the ROS helper against the
+  dummy publishers and check its topic list, rates, delays and echo.
 - [ ] **Viewer end-to-end tests in CI** — drive the `topics` binary in a
   pseudo terminal against the test publishers, answering the terminal queries
   like a kitty-capable terminal, and check the decoded frames and info lines

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Topics: all ROS access goes through one long-lived `rclpy` helper instead
+  of a `ros2` CLI process per topic list refresh, watched topic (`hz` and
+  `delay`), echo and viewer. Watching a topic no longer starts two processes
+  of about 100 MB each, and its first rate shows after about a second
+  instead of three.
+- Topics: rates and delays are measured over the last 10 seconds, so a topic
+  that stops publishing drops to 0 Hz instead of keeping its old rate.
+- Topics: subscriber counts no longer include the app's own subscriptions.
+- Topics: the echo pane shows at most 20 messages per second.
+
+### Fixed
+- Topics: if the ROS helper exits, it is restarted and the watched topics,
+  echo and open viewer are restored; watched topics stay listed even if a
+  topic list misses them.
+
 ### Added
 - Topics: image viewer for `sensor_msgs/msg/Image` and
   `sensor_msgs/msg/CompressedImage` topics, opened with `v`. Renders with the

@@ -26,8 +26,8 @@ A powerful Terminal User Interface (TUI) for monitoring and managing ROS2 topics
 ## Prerequisites
 
 - ROS2 installed and sourced
-- `ros2 topic` and `ros2 param` commands available in your shell
-- For the viewers: `python3` with `rclpy`, which every ROS2 installation includes. No message packages are compiled into the binaries, so one build works on every distribution.
+- The `ros2` command available in your shell (`params` runs `ros2 param`; `topics` uses it to check that ROS2 is sourced)
+- `python3` with `rclpy`, which every ROS2 installation includes: the `topics` app does all its ROS access through one embedded `rclpy` helper. No message packages are compiled into the binaries, so one build works on every distribution.
 
 ## Installation
 
@@ -78,7 +78,7 @@ The container starts the `ros2_tui_test` dummy publishers automatically, so both
 ## Topics TUI (`topics`)
 
 ### Highlights
-- 📊 Real-time Hz/Delay monitoring backed by streaming `ros2 topic hz` / `delay`
+- 📊 Real-time Hz/Delay monitoring of watched topics, measured by one lightweight helper process for all topics
 - 🌳 Namespace-aware topic tree with collapsible groups and instant search
 - 🎯 Watch-only metrics so large graphs stay responsive and low overhead
 - 🎨 Status indicators, Bollinger-band charts, and debug logging for on-call triage
@@ -111,7 +111,7 @@ Toggling a row with `Enter` starts Hz/Delay measurement. Unwatched topics stay l
 ### Command-Line Options
 - `--refresh <SECONDS>` – Topic list refresh cadence (default: 5)
 - `--detail-refresh <SECONDS>` – Legacy detail polling interval (still accepted)
-- `--no-initial-fetch` – Skip the initial `ros2 topic list` call
+- `--no-initial-fetch` – Skip the initial topic list fetch
 - `--help`, `--version` – Standard metadata flags
 
 ### Viewers at a Glance
@@ -171,8 +171,10 @@ Press `v` on a topic marked `◉` to see its data. Common keys in every viewer: 
 - On slow links, lower a viewer's frame rate with `-`; the info line shows the bandwidth to the terminal.
 
 ### Architecture Highlights
-- Background workers keep `ros2 topic list -v`, `ros2 topic hz`, and `ros2 topic delay` streaming without blocking the UI
-- Viewers receive messages from `message_stream.py`, a small `rclpy` script embedded in the binary. It subscribes in raw mode, matching the publishers' reliability and durability like `ros2 topic hz` does, throttles to the frame rate limit and passes the serialized messages to Rust, which decodes them (XCDR1 and XCDR2) and renders them. No message packages are compiled in.
+- All ROS access goes through `ros_bridge.py`, one long-lived `rclpy` helper embedded in the binary, instead of a `ros2` CLI process per topic list, watched topic, echo and viewer. Commands go to it as JSON lines; it answers with framed JSON events and serialized messages.
+- The helper lists topics (without counting its own subscriptions), measures rate and header delay of watched topics over a 10 second window from raw messages, echoes messages as YAML and streams serialized messages to the viewers, throttled to their frame rate limit. Rust decodes those (XCDR1 and XCDR2) and renders them.
+- Subscriptions match the publishers' reliability and durability like `ros2 topic hz` does, and adopt them once publishers appear, so latched topics and large raw images arrive reliably.
+- If the helper exits, it is restarted and the watched topics, the echo and the open viewer are restored.
 - Crossbeam channels drive a non-blocking event loop that redraws at ~20 FPS (100 while a viewer is open) and processes input instantly
 - Watched topics maintain FIFO histories (including std dev) to power Bollinger-band charts and statistical readouts
 - Selective monitoring conserves system resources by spawning measurement processes only when needed
@@ -261,7 +263,7 @@ When you push a tag such as `v0.3.0`, the hook calls `scripts/check-release-vers
 
 | Tool | Language | Dependencies | Features | Performance |
 |------|----------|-------------|----------|-------------|
-| topics (ours) | Rust | ros2 CLI + rclpy | TUI, Real-time metrics, sensor viewers | ⚡ Fast & Easy |
+| topics (ours) | Rust | rclpy | TUI, Real-time metrics, sensor viewers | ⚡ Fast & Easy |
 | params (ours) | Rust | ros2 CLI only | TUI, Parameter management | ⚡ Fast & Easy |
 | rqt_topic | Python | Full ROS2 + Qt | GUI, Rich features | 🐌 Heavy |
 | rviz2 | C++ | Full ROS2 + Qt + OpenGL | GUI, 3D visualization | 🖥️ Needs a display |
